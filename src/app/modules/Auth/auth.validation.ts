@@ -74,6 +74,13 @@ const resetPasswordValidationSchema = z.object({
   }),
 });
 
+// Google Verify Validation Schema
+const googleVerifyValidationSchema = z.object({
+  body: z.object({
+    idToken: z.string({ message: 'ID Token is required' }),
+  }),
+});
+
 export const AuthValidation = {
   registerValidationSchema,
   loginValidationSchema,
@@ -81,4 +88,5 @@ export const AuthValidation = {
   refreshTokenValidationSchema,
   forgetPasswordValidationSchema,
   resetPasswordValidationSchema,
+  googleVerifyValidationSchema,
 };

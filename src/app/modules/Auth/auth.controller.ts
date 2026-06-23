@@ -101,6 +101,31 @@ const resetPassword = catchAsync(async (req, res) => {
   });
 });
 
+// ==================== GOOGLE VERIFICATION ====================
+const googleVerify = catchAsync(async (req, res) => {
+  const { idToken } = req.body;
+  const result = await AuthServices.googleVerify(idToken);
+  const { refreshToken, accessToken, user } = result;
+
+  // Set refresh token in httpOnly cookie
+  res.cookie('refreshToken', refreshToken, {
+    secure: config.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'none',
+    maxAge: 1000 * 60 * 60 * 24 * 365, // 1 year
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'User logged in successfully with Google',
+    data: {
+      accessToken,
+      user,
+    },
+  });
+});
+
 export const AuthControllers = {
   register,
   loginUser,
@@ -108,4 +133,5 @@ export const AuthControllers = {
   refreshToken,
   forgetPassword,
   resetPassword,
+  googleVerify,
 };

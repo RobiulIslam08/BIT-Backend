@@ -23,4 +23,5 @@ NODE_ENV:process.env.NODE_ENV,
   smtp_secure: process.env.SMTP_SECURE,
   smtp_user: process.env.SMTP_USER,
   smtp_pass: process.env.SMTP_PASS,
+  google_client_id: process.env.GOOGLE_CLIENT_ID,
 };

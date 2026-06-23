@@ -1,5 +1,7 @@
 import httpStatus from 'http-status';
 import jwt, { JwtPayload } from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
+import crypto from 'crypto';
 import config from '../../config';
 import AppError from '../../errors/AppError';
 import {
@@ -10,7 +12,10 @@ import {
 } from './auth.interface';
 import { createToken } from './auth.utils';
 import { User } from '../User/user.model';
+import { UserRole, UserStatus } from '../User/user.interface';
 import { sendEmail } from '../../utils/sendEmail';
+
+const client = new OAuth2Client(config.google_client_id);
 
 // ==================== REGISTRATION ====================
 const registerUser = async (payload: IRegister): Promise<IAuthResponse> => {
@@ -293,6 +298,104 @@ const resetPassword = async (
   await user.save();
 };
 
+// ==================== GOOGLE VERIFICATION ====================
+const googleVerify = async (idToken: string): Promise<IAuthResponse> => {
+  let payload: { email?: string; name?: string; picture?: string } | undefined;
+  try {
+    if (idToken.split('.').length === 3) {
+      // It's a JWT (ID Token)
+      const ticket = await client.verifyIdToken({
+        idToken,
+        audience: config.google_client_id,
+      });
+      const googlePayload = ticket.getPayload();
+      if (googlePayload) {
+        payload = {
+          email: googlePayload.email,
+          name: googlePayload.name,
+          picture: googlePayload.picture,
+        };
+      }
+    } else {
+      // It's an Access Token, fetch info from userinfo endpoint
+      const response = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${idToken}`);
+      if (response.ok) {
+        const data = await response.json() as { email?: string; name?: string; picture?: string };
+        payload = {
+          email: data.email,
+          name: data.name,
+          picture: data.picture,
+        };
+      }
+    }
+  } catch (error) {
+    console.error('Google verification error details:', error);
+    throw new AppError(httpStatus.UNAUTHORIZED, 'Invalid Google Token');
+  }
+
+  if (!payload || !payload.email) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Failed to retrieve user information from Google');
+  }
+
+  const { email, name, picture } = payload;
+
+  // Find if user already exists
+  let user = await User.findOne({ email });
+
+  if (!user) {
+    // Register the new user
+    const randomPassword = crypto.randomBytes(16).toString('hex');
+    user = await User.create({
+      name: name || 'Google User',
+      email,
+      password: randomPassword,
+      profileImage: picture || '',
+      role: UserRole.USER,
+      status: UserStatus.ACTIVE,
+    });
+  } else {
+    // Check if user is deleted
+    if (User.isUserDeleted(user)) {
+      throw new AppError(httpStatus.FORBIDDEN, 'This user has been deleted');
+    }
+
+    // Check if user is blocked
+    if (User.isUserBlocked(user)) {
+      throw new AppError(httpStatus.FORBIDDEN, 'This user is blocked');
+    }
+  }
+
+  // Create JWT payload
+  const jwtPayload = {
+    userId: user._id.toString(),
+    role: user.role,
+  };
+
+  // Generate tokens
+  const accessToken = createToken(
+    jwtPayload,
+    config.jwt_access_secret as string,
+    config.jwt_access_expires_in as string,
+  );
+
+  const refreshToken = createToken(
+    jwtPayload,
+    config.jwt_refresh_secret as string,
+    config.jwt_refresh_expires_in as string,
+  );
+
+  return {
+    accessToken,
+    refreshToken,
+    user: {
+      _id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+    },
+  };
+};
+
 export const AuthServices = {
   registerUser,
   loginUser,
@@ -300,4 +403,5 @@ export const AuthServices = {
   refreshToken,
   forgetPassword,
   resetPassword,
+  googleVerify,
 };

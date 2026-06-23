@@ -50,4 +50,11 @@ router.post(
   AuthControllers.resetPassword,
 );
 
+// ==================== GOOGLE LOGIN/VERIFY ====================
+router.post(
+  '/google-verify',
+  validateRequest(AuthValidation.googleVerifyValidationSchema),
+  AuthControllers.googleVerify,
+);
+
 export const AuthRoutes = router;
