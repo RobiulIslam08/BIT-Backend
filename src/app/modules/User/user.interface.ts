@@ -26,6 +26,8 @@ export interface IUser {
   profileImage?: string;
   isDeleted: boolean;
   passwordChangedAt?: Date;
+  otp?: string;
+  otpExpires?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }

@@ -10,6 +10,7 @@ import {
 } from './auth.interface';
 import { createToken } from './auth.utils';
 import { User } from '../User/user.model';
+import { sendEmail } from '../../utils/sendEmail';
 
 // ==================== REGISTRATION ====================
 const registerUser = async (payload: IRegister): Promise<IAuthResponse> => {
@@ -215,58 +216,54 @@ const forgetPassword = async (email: string): Promise<void> => {
     throw new AppError(httpStatus.FORBIDDEN, 'This user is blocked');
   }
 
-  // Create JWT payload for reset token
-  const jwtPayload = {
-    userId: user._id.toString(),
-    role: user.role,
-  };
+  // Generate 6-digit OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-  // Generate reset token (valid for 10 minutes)
-  const resetToken = createToken(
-    jwtPayload,
-    config.jwt_access_secret as string,
-    '10m',
-  );
+  // Save OTP to DB
+  await User.findByIdAndUpdate(user._id, { otp, otpExpires });
 
-  // Create reset link
-  const resetUILink = `${config.reset_pass_ui_link}?email=${user.email}&token=${resetToken}`;
+  // Send email with OTP
+  const emailHtml = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h2 style="color: #4f46e5; margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.025em;">Password Reset Request</h2>
+      </div>
+      <p style="color: #4a5568; font-size: 16px; line-height: 24px; margin-top: 0;">Dear User,</p>
+      <p style="color: #4a5568; font-size: 16px; line-height: 24px;">We received a request to reset the password for your account. Please use the following One-Time Password (OTP) to complete the reset process. This OTP is valid for <strong>10 minutes</strong>.</p>
+      <div style="text-align: center; margin: 36px 0;">
+        <span style="font-family: monospace; font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #4f46e5; background-color: #f0fdf4; padding: 12px 30px; border-radius: 8px; border: 2px dashed #86efac; display: inline-block;">
+          ${otp}
+        </span>
+      </div>
+      <p style="color: #718096; font-size: 14px; line-height: 20px;">If you did not request a password reset, please ignore this email. Your password will remain unchanged.</p>
+      <hr style="border: 0; border-top: 1px solid #edf2f7; margin: 30px 0;" />
+      <p style="color: #718096; font-size: 14px; line-height: 20px; text-align: center; margin: 0;">
+        Thank you,<br/>
+        <strong>BIT Software & IT Solution Team</strong>
+      </p>
+    </div>
+  `;
 
-  // TODO: Send email with reset link
-  // sendEmail(user.email, resetUILink);
+  try {
+    await sendEmail(user.email, emailHtml);
+  } catch (error) {
+    console.error('Failed to send password reset OTP email:', error);
+  }
 
-  console.log('Password reset link:', resetUILink);
+  // Log in console for development/backup
+  console.log(`[DEV ONLY] OTP for ${email} is: ${otp}`);
 };
 
 // ==================== RESET PASSWORD ====================
 const resetPassword = async (
-  payload: { email: string; newPassword: string },
-  token: string,
+  payload: { email: string; otp: string; newPassword: string }
 ): Promise<void> => {
-  // Verify token
-  if (!token) {
-    throw new AppError(httpStatus.UNAUTHORIZED, 'Token is required');
-  }
-
-  let actualToken = token;
-  if (token.startsWith('Bearer ')) {
-    actualToken = token.split(' ')[1];
-  }
-
-  const decoded = jwt.verify(
-    actualToken,
-    config.jwt_access_secret as string,
-  ) as JwtPayload;
-
   // Check if user exists
   const user = await User.findOne({ email: payload.email }).select('+password');
 
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, 'User not found');
-  }
-
-  // Verify token belongs to this user
-  if (user._id.toString() !== decoded.userId) {
-    throw new AppError(httpStatus.FORBIDDEN, 'Invalid token');
   }
 
   // Check if user is deleted
@@ -279,8 +276,20 @@ const resetPassword = async (
     throw new AppError(httpStatus.FORBIDDEN, 'This user is blocked');
   }
 
+  // Verify OTP exists and matches
+  if (!user.otp || user.otp !== payload.otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid OTP');
+  }
+
+  // Verify OTP is not expired
+  if (user.otpExpires && new Date() > user.otpExpires) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'OTP has expired');
+  }
+
   // Update password (model middleware will hash it)
   user.password = payload.newPassword;
+  user.otp = undefined;
+  user.otpExpires = undefined;
   await user.save();
 };
 

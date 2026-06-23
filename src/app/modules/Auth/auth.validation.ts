@@ -67,6 +67,7 @@ const resetPasswordValidationSchema = z.object({
     email: z
       .string({ message: 'Email is required' })
       .email({ message: 'Invalid email address' }),
+    otp: z.string({ message: 'OTP is required' }),
     newPassword: z
       .string({ message: 'New password is required' })
       .min(6, { message: 'Password must be at least 6 characters' }),

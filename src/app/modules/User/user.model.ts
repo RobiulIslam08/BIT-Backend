@@ -61,6 +61,14 @@ const userSchema = new Schema<IUserDocument, IUserModel>(
     passwordChangedAt: {
       type: Date,
     },
+    otp: {
+      type: String,
+      default: null,
+    },
+    otpExpires: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
