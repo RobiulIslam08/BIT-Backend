@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import config from '../config';
 
-export const sendEmail = async (to: string, html: string) => {
+export const sendEmail = async (to: string, html: string, subject?: string) => {
   const transporter = nodemailer.createTransport({
     host: config.smtp_host || 'smtp.gmail.com',
     port: Number(config.smtp_port) || 587,
@@ -15,7 +15,7 @@ export const sendEmail = async (to: string, html: string) => {
   await transporter.sendMail({
     from: `"BIT Software & IT Solution" <${config.smtp_user || 'no-reply@bitsoftwareitsolution.com'}>`,
     to,
-    subject: 'OTP Verification for Password Reset',
+    subject: subject || 'OTP Verification for Password Reset',
     text: '',
     html,
   });
