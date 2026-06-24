@@ -11,7 +11,7 @@ import httpStatus from 'http-status';
 import mongoose from 'mongoose';
 import { GmbOrder } from './gmbOrder.model';
 import { IGmbOrder } from './gmbOrder.interface';
-import { getPayPalOrderDetails } from '../../utils/paypal';
+import { getPayPalOrderDetails, capturePayPalOrder } from '../../utils/paypal';
 import AppError from '../../errors/AppError';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
@@ -170,15 +170,43 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
           throw new AppError(httpStatus.CONFLICT, 'This PayPal transaction has already been processed.');
         }
 
-        // Fetch official order details from PayPal (server-to-server)
+        // Capture payment for order directly via PayPal (server-to-server)
         let paypalOrder: any;
         try {
-          paypalOrder = await getPayPalOrderDetails(paypalOrderId);
-        } catch {
-          throw new AppError(
-            httpStatus.BAD_GATEWAY,
-            'Unable to verify payment with PayPal. Please contact support.',
-          );
+          paypalOrder = await capturePayPalOrder(paypalOrderId);
+        } catch (captureErr: any) {
+          // Write capture error to a local log file for debugging
+          try {
+            const fs = require('fs');
+            const logContent = `[${new Date().toISOString()}] Capture Error for ID ${paypalOrderId}: ${captureErr.message}\n` +
+                               `Capture Error Response: ${JSON.stringify(captureErr.response?.data || '')}\n\n`;
+            fs.appendFileSync('paypal_error.log', logContent);
+          } catch (logErr) {
+            console.error('Failed to write log file:', logErr);
+          }
+
+          // Fallback: If capture fails, check if the order has already been captured
+          try {
+            console.log(`[PayPal] Capture failed, checking if already captured for order ${paypalOrderId}`);
+            paypalOrder = await getPayPalOrderDetails(paypalOrderId);
+            if (paypalOrder.status !== 'COMPLETED') {
+              throw new Error('Order not completed');
+            }
+          } catch (fallbackErr: any) {
+            // Write fallback error to a local log file for debugging
+            try {
+              const fs = require('fs');
+              const logContent = `[${new Date().toISOString()}] Fallback Error for ID ${paypalOrderId}: ${fallbackErr.message}\n` +
+                                 `Fallback Error Response: ${JSON.stringify(fallbackErr.response?.data || '')}\n\n`;
+              fs.appendFileSync('paypal_error.log', logContent);
+            } catch (logErr) {
+              console.error('Failed to write log file:', logErr);
+            }
+            throw new AppError(
+              httpStatus.BAD_GATEWAY,
+              'Unable to verify or capture payment with PayPal. Please contact support.',
+            );
+          }
         }
 
         // ─── CRITICAL: Only accept COMPLETED status ───

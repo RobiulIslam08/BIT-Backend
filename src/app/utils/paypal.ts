@@ -73,3 +73,29 @@ export const getPayPalOrderDetails = async (orderId: string): Promise<any> => {
     throw new Error('PayPal order verification failed');
   }
 };
+
+/**
+ * Capture payment for a PayPal order by Order ID
+ */
+export const capturePayPalOrder = async (orderId: string): Promise<any> => {
+  const accessToken = await getPayPalAccessToken();
+
+  try {
+    const response = await axios({
+      url: `${getPayPalBaseUrl()}/v2/checkout/orders/${orderId}/capture`,
+      method: 'post',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      data: {},
+    });
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      'Failed to capture PayPal order:',
+      error.response?.data || error.message,
+    );
+    throw new Error('PayPal order capture failed');
+  }
+};
