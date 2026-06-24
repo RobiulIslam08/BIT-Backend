@@ -59,6 +59,7 @@ const registerUser = async (payload: IRegister): Promise<IAuthResponse> => {
       name: newUser.name,
       email: newUser.email,
       role: newUser.role,
+      profileImage: newUser.profileImage,
     },
   };
 };
@@ -116,6 +117,7 @@ const loginUser = async (payload: ILogin): Promise<IAuthResponse> => {
       name: user.name,
       email: user.email,
       role: user.role,
+      profileImage: user.profileImage,
     },
   };
 };
@@ -363,6 +365,12 @@ const googleVerify = async (idToken: string): Promise<IAuthResponse> => {
     if (User.isUserBlocked(user)) {
       throw new AppError(httpStatus.FORBIDDEN, 'This user is blocked');
     }
+
+    // Update profile image if available from Google
+    if (picture && user.profileImage !== picture) {
+      user.profileImage = picture;
+      await user.save();
+    }
   }
 
   // Create JWT payload
@@ -392,6 +400,7 @@ const googleVerify = async (idToken: string): Promise<IAuthResponse> => {
       name: user.name,
       email: user.email,
       role: user.role,
+      profileImage: user.profileImage,
     },
   };
 };
