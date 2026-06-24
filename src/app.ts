@@ -1,7 +1,8 @@
-import { Application, Request, Response } from 'express';
+import { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import express from 'express';
+import { connectDB } from './app/DB/connection';
 import path from 'path';
 import helmet from 'helmet';
 import router from './app/routes';
@@ -46,6 +47,21 @@ app.use(cookieParser());
 
 // ─── Static Files: Uploaded screenshots ───
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+
+// Ensure MongoDB is connected before processing any request (critical for Vercel serverless)
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error('Failed to connect to MongoDB:', err);
+    res.status(503).json({
+      success: false,
+      message: 'Database connection failed. Please try again later.',
+      errorSources: [{ path: '', message: 'Database connection failed' }],
+    });
+  }
+});
 
 // ─── API Routes ───
 app.use('/api/v1', router);
