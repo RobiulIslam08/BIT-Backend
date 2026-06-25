@@ -144,154 +144,148 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
     throw new AppError(httpStatus.BAD_REQUEST, 'Terms of Service must be accepted.');
   }
 
-  // ─── Start MongoDB session for transaction support ───
-  const session = await mongoose.startSession();
-
-  try {
-    let savedOrder: any;
-
-    await session.withTransaction(async () => {
-      if (orderData.paymentMethod === 'paypal') {
-        // ─── PayPal Server-side Verification ───
-
-        if (!orderData.paypalOrderId || typeof orderData.paypalOrderId !== 'string') {
-          throw new AppError(httpStatus.BAD_REQUEST, 'PayPal Order ID is required.');
-        }
-
-        // Sanitize paypalOrderId (should be alphanumeric only from PayPal)
-        const paypalOrderId = orderData.paypalOrderId.replace(/[^A-Za-z0-9\-]/g, '');
-        if (paypalOrderId !== orderData.paypalOrderId) {
-          throw new AppError(httpStatus.BAD_REQUEST, 'Invalid PayPal Order ID format.');
-        }
-
-        // Idempotency: Check for duplicate transaction
-        const existingOrder = await GmbOrder.findOne({ paypalOrderId }).session(session);
-        if (existingOrder) {
-          throw new AppError(httpStatus.CONFLICT, 'This PayPal transaction has already been processed.');
-        }
-
-        // Capture payment for order directly via PayPal (server-to-server)
-        let paypalOrder: any;
-        try {
-          paypalOrder = await capturePayPalOrder(paypalOrderId);
-        } catch (captureErr: any) {
-          // Write capture error to a local log file for debugging
-          try {
-            const fs = require('fs');
-            const logContent = `[${new Date().toISOString()}] Capture Error for ID ${paypalOrderId}: ${captureErr.message}\n` +
-                               `Capture Error Response: ${JSON.stringify(captureErr.response?.data || '')}\n\n`;
-            fs.appendFileSync('paypal_error.log', logContent);
-          } catch (logErr) {
-            console.error('Failed to write log file:', logErr);
-          }
-
-          // Fallback: If capture fails, check if the order has already been captured
-          try {
-            console.log(`[PayPal] Capture failed, checking if already captured for order ${paypalOrderId}`);
-            paypalOrder = await getPayPalOrderDetails(paypalOrderId);
-            if (paypalOrder.status !== 'COMPLETED') {
-              throw new Error('Order not completed');
-            }
-          } catch (fallbackErr: any) {
-            // Write fallback error to a local log file for debugging
-            try {
-              const fs = require('fs');
-              const logContent = `[${new Date().toISOString()}] Fallback Error for ID ${paypalOrderId}: ${fallbackErr.message}\n` +
-                                 `Fallback Error Response: ${JSON.stringify(fallbackErr.response?.data || '')}\n\n`;
-              fs.appendFileSync('paypal_error.log', logContent);
-            } catch (logErr) {
-              console.error('Failed to write log file:', logErr);
-            }
-            throw new AppError(
-              httpStatus.BAD_GATEWAY,
-              'Unable to verify or capture payment with PayPal. Please contact support.',
-            );
-          }
-        }
-
-        // ─── CRITICAL: Only accept COMPLETED status ───
-        // APPROVED = authorized but NOT yet captured — do NOT treat as paid
-        if (paypalOrder.status !== 'COMPLETED') {
-          throw new AppError(
-            httpStatus.PAYMENT_REQUIRED,
-            `Payment not completed. Current status: ${paypalOrder.status}. Please complete the PayPal payment flow.`,
-          );
-        }
-
-        // Verify capture details exist
-        const captureDetails = paypalOrder.purchase_units?.[0]?.payments?.captures?.[0];
-        if (!captureDetails) {
-          throw new AppError(
-            httpStatus.BAD_REQUEST,
-            'Payment capture details not found. Transaction may be incomplete.',
-          );
-        }
-
-        // ─── Amount Verification (anti-tamper) ───
-        // SAR is pegged to USD at 3.75 (fixed rate by Saudi Arabia)
-        const expectedUSD = Number(orderData.finalAmount) / 3.75;
-        const paidUSD = parseFloat(captureDetails.amount.value);
-        // Allow max 5 cents tolerance for floating-point rounding
-        const TOLERANCE_USD = 0.05;
-
-        if (paidUSD < expectedUSD - TOLERANCE_USD) {
-          // Log the tampering attempt — do NOT expose exact amounts to client
-          console.error(
-            `[SECURITY] Payment amount mismatch for PayPal order ${paypalOrderId}. ` +
-            `Expected: $${expectedUSD.toFixed(2)}, Received: $${paidUSD.toFixed(2)}. ` +
-            `Email: ${orderData.email}`
-          );
-          await notifyAdmin(
-            '🚨 Payment Amount Mismatch Detected',
-            `PayPal order ${paypalOrderId} — Expected: $${expectedUSD.toFixed(2)} USD, Received: $${paidUSD.toFixed(2)} USD. Customer: ${orderData.email}`
-          );
-          throw new AppError(httpStatus.BAD_REQUEST, 'Payment amount does not match the order total. Please contact support.');
-        }
-
-        // Enrich payload with verified PayPal data
-        orderData.paymentStatus = 'paid';
-        orderData.paypalOrderId = paypalOrderId;
-        orderData.paypalTransactionId = captureDetails.id;
-        orderData.payerName = `${paypalOrder.payer?.name?.given_name || ''} ${paypalOrder.payer?.name?.surname || ''}`.trim() || undefined;
-        orderData.payerEmail = paypalOrder.payer?.email_address || undefined;
-
-      } else {
-        // ─── Manual Payment: Pending admin verification ───
-        orderData.paymentStatus = 'pending_verification';
-      }
-
-      // Set default order status
-      orderData.orderStatus = 'pending_review';
-
-      // Remove any client-sent status overrides (security)
-      delete (orderData as any).__v;
-      delete (orderData as any)._id;
-
-      // ─── Save to MongoDB (inside transaction) ───
-      const [order] = await GmbOrder.create([orderData], { session });
-      savedOrder = order;
-    });
-
-    // ─── Post-save: Send admin email notification (outside transaction) ───
-    const emailBody = `
-      New GMB Order Received!<br/><br/>
-      <b>Business:</b> ${savedOrder.businessName}<br/>
-      <b>Service:</b> ${savedOrder.serviceType}<br/>
-      <b>Amount:</b> ${savedOrder.finalAmount} SAR<br/>
-      <b>Payment:</b> ${savedOrder.paymentMethod} (${savedOrder.paymentStatus})<br/>
-      <b>Customer:</b> ${savedOrder.email}<br/>
-      <b>Order ID:</b> ${savedOrder._id}
-    `;
-    await notifyAdmin('📦 New GMB Order — Action Required', emailBody);
-
-    // Send customer order confirmation email (outside transaction)
-    await notifyCustomer(savedOrder);
-
-    return savedOrder;
-
-  } finally {
-    await session.endSession();
+  // ─── transactionDetails: JSON string হলে parse করো (FormData থেকে আসে) ───
+  if (orderData.transactionDetails && typeof orderData.transactionDetails === 'string') {
+    try {
+      orderData.transactionDetails = JSON.parse(orderData.transactionDetails);
+    } catch {
+      throw new AppError(httpStatus.BAD_REQUEST, 'Invalid transaction details format.');
+    }
   }
+
+  // ─── Boolean fields: string থেকে convert করো (FormData-এ সব string হয়) ───
+  if (typeof orderData.termsAccepted === 'string') {
+    orderData.termsAccepted = (orderData.termsAccepted as string) === 'true';
+  }
+  if (typeof orderData.hasExistingProfile === 'string') {
+    orderData.hasExistingProfile = (orderData.hasExistingProfile as string) === 'true';
+  }
+  if (typeof orderData.profileHasIssues === 'string') {
+    orderData.profileHasIssues = (orderData.profileHasIssues as string) === 'true';
+  }
+  // Number fields
+  if (typeof orderData.finalAmount === 'string') {
+    orderData.finalAmount = parseFloat(orderData.finalAmount as string);
+  }
+  if (typeof orderData.originalPrice === 'string') {
+    orderData.originalPrice = parseFloat(orderData.originalPrice as string);
+  }
+  if (typeof orderData.discountAmount === 'string') {
+    orderData.discountAmount = parseFloat(orderData.discountAmount as string);
+  }
+
+  if (orderData.paymentMethod === 'paypal') {
+    // ─── PayPal Server-side Verification ───
+
+    if (!orderData.paypalOrderId || typeof orderData.paypalOrderId !== 'string') {
+      throw new AppError(httpStatus.BAD_REQUEST, 'PayPal Order ID is required.');
+    }
+
+    // Sanitize paypalOrderId (should be alphanumeric only from PayPal)
+    const paypalOrderId = orderData.paypalOrderId.replace(/[^A-Za-z0-9\-]/g, '');
+    if (paypalOrderId !== orderData.paypalOrderId) {
+      throw new AppError(httpStatus.BAD_REQUEST, 'Invalid PayPal Order ID format.');
+    }
+
+    // Idempotency: Check for duplicate transaction
+    const existingOrder = await GmbOrder.findOne({ paypalOrderId });
+    if (existingOrder) {
+      throw new AppError(httpStatus.CONFLICT, 'This PayPal transaction has already been processed.');
+    }
+
+    // Capture payment for order directly via PayPal (server-to-server)
+    let paypalOrder: any;
+    try {
+      paypalOrder = await capturePayPalOrder(paypalOrderId);
+    } catch (captureErr: any) {
+      // Fallback: If capture fails, check if the order has already been captured
+      try {
+        console.log(`[PayPal] Capture failed, checking if already captured for order ${paypalOrderId}`);
+        paypalOrder = await getPayPalOrderDetails(paypalOrderId);
+        if (paypalOrder.status !== 'COMPLETED') {
+          throw new Error('Order not completed');
+        }
+      } catch {
+        throw new AppError(
+          httpStatus.BAD_GATEWAY,
+          'Unable to verify or capture payment with PayPal. Please contact support.',
+        );
+      }
+    }
+
+    // ─── CRITICAL: Only accept COMPLETED status ───
+    if (paypalOrder.status !== 'COMPLETED') {
+      throw new AppError(
+        httpStatus.PAYMENT_REQUIRED,
+        `Payment not completed. Current status: ${paypalOrder.status}. Please complete the PayPal payment flow.`,
+      );
+    }
+
+    // Verify capture details exist
+    const captureDetails = paypalOrder.purchase_units?.[0]?.payments?.captures?.[0];
+    if (!captureDetails) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Payment capture details not found. Transaction may be incomplete.',
+      );
+    }
+
+    // ─── Amount Verification (anti-tamper) ───
+    const expectedUSD = Number(orderData.finalAmount) / 3.75;
+    const paidUSD = parseFloat(captureDetails.amount.value);
+    const TOLERANCE_USD = 0.05;
+
+    if (paidUSD < expectedUSD - TOLERANCE_USD) {
+      console.error(
+        `[SECURITY] Payment amount mismatch for PayPal order ${paypalOrderId}. ` +
+        `Expected: $${expectedUSD.toFixed(2)}, Received: $${paidUSD.toFixed(2)}. ` +
+        `Email: ${orderData.email}`
+      );
+      await notifyAdmin(
+        '🚨 Payment Amount Mismatch Detected',
+        `PayPal order ${paypalOrderId} — Expected: $${expectedUSD.toFixed(2)} USD, Received: $${paidUSD.toFixed(2)} USD. Customer: ${orderData.email}`
+      );
+      throw new AppError(httpStatus.BAD_REQUEST, 'Payment amount does not match the order total. Please contact support.');
+    }
+
+    // Enrich payload with verified PayPal data
+    orderData.paymentStatus = 'paid';
+    orderData.paypalOrderId = paypalOrderId;
+    orderData.paypalTransactionId = captureDetails.id;
+    orderData.payerName = `${paypalOrder.payer?.name?.given_name || ''} ${paypalOrder.payer?.name?.surname || ''}`.trim() || undefined;
+    orderData.payerEmail = paypalOrder.payer?.email_address || undefined;
+
+  } else {
+    // ─── Manual Payment: Pending admin verification ───
+    orderData.paymentStatus = 'pending_verification';
+  }
+
+  // Set default order status
+  orderData.orderStatus = 'pending_review';
+
+  // Remove any client-sent status overrides (security)
+  delete (orderData as any).__v;
+  delete (orderData as any)._id;
+
+  // ─── Save to MongoDB (direct create — no session needed for single document) ───
+  const savedOrder = await GmbOrder.create(orderData);
+
+  // ─── Post-save: Send admin email notification ───
+  const emailBody = `
+    New GMB Order Received!<br/><br/>
+    <b>Business:</b> ${savedOrder.businessName}<br/>
+    <b>Service:</b> ${savedOrder.serviceType}<br/>
+    <b>Amount:</b> ${savedOrder.finalAmount} SAR<br/>
+    <b>Payment:</b> ${savedOrder.paymentMethod} (${savedOrder.paymentStatus})<br/>
+    <b>Customer:</b> ${savedOrder.email}<br/>
+    <b>Order ID:</b> ${savedOrder._id}
+  `;
+  await notifyAdmin('📦 New GMB Order — Action Required', emailBody);
+
+  // Send customer order confirmation email
+  await notifyCustomer(savedOrder);
+
+  return savedOrder;
 };
 
 // ==================== VALIDATE COUPON ====================

@@ -11,9 +11,13 @@ import { GmbOrderServices } from './gmbOrder.service';
 const submitOrder = catchAsync(async (req, res) => {
   const orderData = req.body;
 
-  // If a payment screenshot file was uploaded via multer, store the filename
+  // If a payment screenshot was uploaded via multer memoryStorage,
+  // convert the buffer to a base64 data URI for MongoDB storage.
+  // (Vercel serverless filesystem is read-only — no disk writes allowed)
   if (req.file) {
-    orderData.paymentScreenshot = req.file.filename;
+    const base64 = req.file.buffer.toString('base64');
+    const mimeType = req.file.mimetype;
+    orderData.paymentScreenshot = `data:${mimeType};base64,${base64}`;
   }
 
   const result = await GmbOrderServices.submitGmbOrder(orderData);

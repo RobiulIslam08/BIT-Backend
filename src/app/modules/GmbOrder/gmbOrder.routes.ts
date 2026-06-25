@@ -4,7 +4,6 @@
 
 import express from 'express';
 import multer from 'multer';
-import path from 'path';
 import rateLimit from 'express-rate-limit';
 import { GmbOrderControllers } from './gmbOrder.controller';
 import auth from '../../middleware/auth';
@@ -38,22 +37,8 @@ const couponRateLimit = rateLimit({
   },
 });
 
-// ─── Multer: Payment Screenshot Upload ───
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/payment-proofs/');
-  },
-  filename: (req, file, cb) => {
-    // Sanitize original filename to prevent directory traversal
-    const safeName = path
-      .basename(file.originalname)
-      .replace(/[^a-zA-Z0-9.\-_]/g, '_')
-      .substring(0, 80);
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `payment-${uniqueSuffix}-${safeName}`);
-  },
-});
-
+// ─── Multer: Memory Storage (Vercel serverless-এ filesystem read-only) ───
+// File buffer -> base64 string -> MongoDB-তে সংরক্ষণ হবে
 const fileFilter = (
   req: express.Request,
   file: Express.Multer.File,
@@ -68,7 +53,7 @@ const fileFilter = (
 };
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(), // ✅ Vercel-এ disk write নেই, memory-তে রাখো
   fileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB max

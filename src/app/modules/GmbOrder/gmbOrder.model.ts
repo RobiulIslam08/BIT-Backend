@@ -79,7 +79,7 @@ const GmbOrderSchema = new Schema<IGmbOrder>(
       senderName: { type: String, trim: true, maxlength: 200 },
       paymentDate: { type: String, trim: true, maxlength: 30 },
     },
-    paymentScreenshot: { type: String, maxlength: 500 }, // stored filename
+    paymentScreenshot: { type: String }, // base64 data URI (stored in MongoDB, no filesystem)
 
     // ─── Order Status ───
     orderStatus: {
