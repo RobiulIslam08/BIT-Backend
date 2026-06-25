@@ -11,7 +11,7 @@ import httpStatus from 'http-status';
 import mongoose from 'mongoose';
 import { GmbOrder } from './gmbOrder.model';
 import { IGmbOrder } from './gmbOrder.interface';
-import { getPayPalOrderDetails, capturePayPalOrder } from '../../utils/paypal';
+import { getPayPalOrderDetails, capturePayPalOrder, createPayPalOrder } from '../../utils/paypal';
 import AppError from '../../errors/AppError';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
@@ -396,10 +396,49 @@ const updateOrderStatus = async (orderId: string, updateData: Partial<IGmbOrder>
   return order;
 };
 
+// ==================== CREATE PAYPAL ORDER (Server-Side) ====================
+// Called BEFORE the user pays — creates a PayPal order via server-to-server API
+// Returns the PayPal order ID which the frontend SDK uses to render the payment UI
+const createPayPalOrderForCheckout = async (data: {
+  finalAmount: number;
+  serviceType: string;
+}) => {
+  const { finalAmount, serviceType } = data;
+
+  if (!finalAmount || isNaN(Number(finalAmount)) || Number(finalAmount) <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order amount.');
+  }
+
+  // SAR → USD (fixed rate 3.75)
+  const amountUSD = (Number(finalAmount) / 3.75).toFixed(2);
+
+  const serviceLabel =
+    serviceType === 'new'
+      ? 'New Profile Setup'
+      : serviceType === 'recovery'
+        ? 'Profile Recovery'
+        : 'Profile Management';
+
+  const description = `BIT Software — GMB Service: ${serviceLabel}`;
+
+  const paypalOrder = await createPayPalOrder(amountUSD, description);
+
+  if (!paypalOrder?.id) {
+    throw new AppError(httpStatus.BAD_GATEWAY, 'Failed to create PayPal order. Please try again.');
+  }
+
+  return {
+    paypalOrderId: paypalOrder.id,
+    amountUSD,
+    status: paypalOrder.status,
+  };
+};
+
 export const GmbOrderServices = {
   submitGmbOrder,
   validateCoupon,
   getOrderById,
   getAllOrders,
   updateOrderStatus,
+  createPayPalOrderForCheckout,
 };

@@ -8,7 +8,7 @@
 import axios from 'axios';
 
 const getPayPalBaseUrl = (): string => {
-  return process.env.PAYPAL_MODE === 'live'
+  return process.env.PAYPAL_MODE?.toLowerCase() === 'live'
     ? 'https://api-m.paypal.com'
     : 'https://api-m.sandbox.paypal.com';
 };
@@ -97,5 +97,55 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
       error.response?.data || error.message,
     );
     throw new Error('PayPal order capture failed');
+  }
+};
+
+/**
+ * Create a PayPal order server-side (server-to-server).
+ * This replaces the deprecated client-side actions.order.create().
+ * @param amountUSD - Amount in USD (already converted)
+ * @param description - Order description shown to buyer
+ */
+export const createPayPalOrder = async (
+  amountUSD: string,
+  description: string,
+): Promise<any> => {
+  const accessToken = await getPayPalAccessToken();
+
+  try {
+    const response = await axios({
+      url: `${getPayPalBaseUrl()}/v2/checkout/orders`,
+      method: 'post',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `bit-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      },
+      data: {
+        intent: 'CAPTURE',
+        purchase_units: [
+          {
+            amount: {
+              currency_code: 'USD',
+              value: amountUSD,
+            },
+            description,
+          },
+        ],
+        application_context: {
+          brand_name: 'BIT Software & IT Solution',
+          user_action: 'PAY_NOW',
+          return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/services/google-my-business`,
+          cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/services/google-my-business`,
+        },
+      },
+    });
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      'Failed to create PayPal order (server-side):',
+      error.response?.data || error.message,
+    );
+    throw new Error('PayPal order creation failed');
   }
 };

@@ -78,10 +78,24 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   });
 });
 
+// ==================== CREATE PAYPAL ORDER (Server-Side) ====================
+const createPayPalOrder = catchAsync(async (req, res) => {
+  const { finalAmount, serviceType } = req.body;
+  const result = await GmbOrderServices.createPayPalOrderForCheckout({ finalAmount, serviceType });
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: 'PayPal order created successfully.',
+    data: result,
+  });
+});
+
 export const GmbOrderControllers = {
   submitOrder,
   validateCoupon,
   getOrderById,
   getAllOrders,
   updateOrderStatus,
+  createPayPalOrder,
 };

@@ -96,6 +96,10 @@ const handleUpload = (req: express.Request, res: express.Response, next: express
 // Submit a new GMB order (rate limited)
 router.post('/', orderRateLimit, handleUpload, GmbOrderControllers.submitOrder);
 
+// Create PayPal order server-side (returns PayPal order ID for frontend SDK)
+// Must be defined BEFORE the /:id route to avoid conflicts
+router.post('/create-paypal-order', GmbOrderControllers.createPayPalOrder);
+
 // Validate a coupon code (rate limited, brute-force protected)
 router.post('/validate-coupon', couponRateLimit, GmbOrderControllers.validateCoupon);
 
