@@ -15,6 +15,7 @@ export interface ITransactionDetails {
 }
 
 export interface IGmbOrder {
+  orderId?: string;
   // Business info
   businessName: string;
   category: string;

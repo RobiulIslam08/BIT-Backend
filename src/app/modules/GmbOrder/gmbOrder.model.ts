@@ -7,6 +7,7 @@ import { IGmbOrder } from './gmbOrder.interface';
 
 const GmbOrderSchema = new Schema<IGmbOrder>(
   {
+    orderId: { type: String, unique: true, sparse: true, trim: true },
     // ─── Business Info ───
     businessName: { type: String, required: true, trim: true, maxlength: 200 },
     category: { type: String, required: true, trim: true, maxlength: 200 },

@@ -35,6 +35,20 @@ const sanitizeString = (value: unknown): string | undefined => {
   return value.replace(/\$[a-zA-Z]+/g, '').trim().substring(0, 500);
 };
 
+// ─── Generate unique 6-digit order ID ───
+const generateUniqueOrderId = async (): Promise<string> => {
+  let isUnique = false;
+  let orderId = '';
+  while (!isUnique) {
+    orderId = Math.floor(100000 + Math.random() * 900000).toString();
+    const existing = await GmbOrder.findOne({ orderId });
+    if (!existing) {
+      isUnique = true;
+    }
+  }
+  return orderId;
+};
+
 // ─── Send admin notification email ───
 const notifyAdmin = async (subject: string, body: string): Promise<void> => {
   try {
@@ -59,6 +73,8 @@ const notifyCustomer = async (order: any): Promise<void> => {
           ? 'Profile Recovery'
           : 'Profile Management';
 
+    const orderIdLabel = order.orderId ? `#${order.orderId}` : `#${order._id}`;
+
     const customerHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
         <h2 style="color: #4f46e5; margin-top: 0;">Order Confirmed!</h2>
@@ -68,6 +84,10 @@ const notifyCustomer = async (order: any): Promise<void> => {
         <div style="background-color: #f7fafc; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #4f46e5;">
           <h3 style="margin-top: 0; color: #2d3748; font-size: 16px;">Order Details</h3>
           <table style="width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.6;">
+            <tr>
+              <td style="padding: 4px 0; color: #718096; width: 140px;">Order ID:</td>
+              <td style="padding: 4px 0; font-weight: bold; color: #2d3748;">${orderIdLabel}</td>
+            </tr>
             <tr>
               <td style="padding: 4px 0; color: #718096; width: 140px;">Business Name:</td>
               <td style="padding: 4px 0; font-weight: bold; color: #2d3748;">${order.businessName}</td>
@@ -112,8 +132,8 @@ const notifyCustomer = async (order: any): Promise<void> => {
     `;
 
     const subject = isPaypal
-      ? '📦 Order Confirmed — BIT Software & IT Solution'
-      : '⏳ Order Received (Pending Payment Verification) — BIT Software';
+      ? `📦 Order Confirmed ${orderIdLabel} — BIT Software & IT Solution`
+      : `⏳ Order Received ${orderIdLabel} (Pending Payment Verification) — BIT Software`;
 
     await sendEmail(order.email, customerHtml, subject);
   } catch (error) {
@@ -267,6 +287,9 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   delete (orderData as any).__v;
   delete (orderData as any)._id;
 
+  // Generate 6-digit unique order ID
+  orderData.orderId = await generateUniqueOrderId();
+
   // ─── Save to MongoDB (direct create — no session needed for single document) ───
   const savedOrder = await GmbOrder.create(orderData);
 
@@ -278,7 +301,7 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
     <b>Amount:</b> ${savedOrder.finalAmount} SAR<br/>
     <b>Payment:</b> ${savedOrder.paymentMethod} (${savedOrder.paymentStatus})<br/>
     <b>Customer:</b> ${savedOrder.email}<br/>
-    <b>Order ID:</b> ${savedOrder._id}
+    <b>Order ID:</b> #${savedOrder.orderId} (DB ID: ${savedOrder._id})
   `;
   await notifyAdmin('📦 New GMB Order — Action Required', emailBody);
 
@@ -311,12 +334,15 @@ const validateCoupon = async (couponCode: unknown) => {
 
 // ==================== GET ORDER BY ID ====================
 const getOrderById = async (orderId: string) => {
-  // Validate MongoDB ObjectId format
-  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+  let order;
+  if (mongoose.Types.ObjectId.isValid(orderId)) {
+    order = await GmbOrder.findById(orderId).select('-paypalTransactionId -recoveryEmail -recoveryPhone');
+  } else if (/^\d{6}$/.test(orderId)) {
+    order = await GmbOrder.findOne({ orderId }).select('-paypalTransactionId -recoveryEmail -recoveryPhone');
+  } else {
     throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID format.');
   }
 
-  const order = await GmbOrder.findById(orderId).select('-paypalTransactionId -recoveryEmail -recoveryPhone');
   if (!order) {
     throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
   }
