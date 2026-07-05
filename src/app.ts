@@ -20,7 +20,7 @@ app.use(
 );
 
 // ─── CORS ───
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173' || 'https://app.bitsoftwareanditsolution.com' || 'https://www.bitsoftwareanditsolution.com' || 'https://bitsoftwareanditsolution.com')
   .split(',')
   .map((o) => o.trim());
 
