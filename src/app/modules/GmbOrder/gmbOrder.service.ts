@@ -20,6 +20,7 @@ import config from '../../config';
 // NOTE: Move to DB for dynamic management in v2
 const VALID_COUPONS: Record<string, number> = {
   BIT50: 50,
+  BIT20: 20,
   WELCOME100: 100,
   SAVE25: 25,
 };
