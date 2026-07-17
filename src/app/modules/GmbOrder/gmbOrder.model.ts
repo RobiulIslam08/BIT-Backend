@@ -61,7 +61,7 @@ const GmbOrderSchema = new Schema<IGmbOrder>(
     },
     paymentStatus: {
       type: String,
-      enum: ['pending_verification', 'paid', 'failed'],
+      enum: ['pending_verification', 'paid', 'failed', 'due'],
       default: 'pending_verification',
     },
     termsAccepted: { type: Boolean, required: true },

@@ -96,7 +96,13 @@ router.get('/:id', GmbOrderControllers.getOrderById);
 // Admin: Get all orders (requires admin authentication)
 router.get('/', auth('admin'), GmbOrderControllers.getAllOrders);
 
-// Admin: Update order/payment status
+// Admin: Update order/payment status (patch)
 router.patch('/:id', auth('admin'), GmbOrderControllers.updateOrderStatus);
+
+// Admin: Update order info (put)
+router.put('/:id', auth('admin'), GmbOrderControllers.updateOrderInfo);
+
+// Admin: Delete order
+router.delete('/:id', auth('admin'), GmbOrderControllers.deleteOrder);
 
 export const GmbOrderRoutes = router;

@@ -82,6 +82,32 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   });
 });
 
+// ==================== UPDATE ORDER INFO (Admin) ====================
+const updateOrderInfo = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const result = await GmbOrderServices.updateOrderInfo(id, req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Order info updated successfully.',
+    data: result,
+  });
+});
+
+// ==================== DELETE ORDER (Admin) ====================
+const deleteOrder = catchAsync(async (req, res) => {
+  const id = req.params.id as string;
+  const result = await GmbOrderServices.deleteOrder(id);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Order deleted successfully.',
+    data: result,
+  });
+});
+
 // ==================== CREATE PAYPAL ORDER (Server-Side) ====================
 const createPayPalOrder = catchAsync(async (req, res) => {
   const { finalAmount, serviceType } = req.body;
@@ -101,5 +127,7 @@ export const GmbOrderControllers = {
   getOrderById,
   getAllOrders,
   updateOrderStatus,
+  updateOrderInfo,
+  deleteOrder,
   createPayPalOrder,
 };

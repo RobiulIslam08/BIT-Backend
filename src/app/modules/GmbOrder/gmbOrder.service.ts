@@ -417,6 +417,55 @@ const updateOrderStatus = async (orderId: string, updateData: Partial<IGmbOrder>
   return order;
 };
 
+// ==================== UPDATE ORDER INFO (Admin only) ====================
+const updateOrderInfo = async (orderId: string, updateData: Partial<IGmbOrder>) => {
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID format.');
+  }
+
+  // Whitelist allowed update fields
+  const allowedUpdates: Array<keyof IGmbOrder> = [
+    'businessName', 'email', 'phone', 'category', 'serviceType', 'finalAmount', 'orderStatus', 'paymentStatus'
+  ];
+  const safeUpdate: Partial<IGmbOrder> = {};
+  for (const key of allowedUpdates) {
+    if (key in updateData) {
+      (safeUpdate as any)[key] = updateData[key];
+    }
+  }
+
+  if (Object.keys(safeUpdate).length === 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'No valid fields to update.');
+  }
+
+  const order = await GmbOrder.findByIdAndUpdate(
+    orderId,
+    { $set: safeUpdate },
+    { new: true, runValidators: true }
+  );
+
+  if (!order) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+  }
+
+  return order;
+};
+
+// ==================== DELETE ORDER (Admin only) ====================
+const deleteOrder = async (orderId: string) => {
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID format.');
+  }
+
+  const order = await GmbOrder.findByIdAndDelete(orderId);
+
+  if (!order) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+  }
+
+  return order;
+};
+
 // ==================== CREATE PAYPAL ORDER (Server-Side) ====================
 // Called BEFORE the user pays — creates a PayPal order via server-to-server API
 // Returns the PayPal order ID which the frontend SDK uses to render the payment UI
@@ -461,5 +510,7 @@ export const GmbOrderServices = {
   getOrderById,
   getAllOrders,
   updateOrderStatus,
+  updateOrderInfo,
+  deleteOrder,
   createPayPalOrderForCheckout,
 };

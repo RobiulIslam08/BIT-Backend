@@ -4,7 +4,7 @@
 
 export type TServiceType = 'new' | 'recovery' | 'regular';
 export type TPaymentMethod = 'paypal' | 'manual';
-export type TPaymentStatus = 'pending_verification' | 'paid' | 'failed';
+export type TPaymentStatus = 'pending_verification' | 'paid' | 'failed' | 'due';
 export type TOrderStatus = 'pending_review' | 'in_progress' | 'completed' | 'cancelled';
 
 export interface ITransactionDetails {
