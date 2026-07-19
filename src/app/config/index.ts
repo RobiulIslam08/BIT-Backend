@@ -24,4 +24,9 @@ NODE_ENV:process.env.NODE_ENV,
   smtp_user: process.env.SMTP_USER,
   smtp_pass: process.env.SMTP_PASS,
   google_client_id: process.env.GOOGLE_CLIENT_ID,
+  // ─── Namecheap API ───
+  namecheap_api_key: process.env.NAMECHEAP_API_KEY,
+  namecheap_api_user: process.env.NAMECHEAP_API_USER,
+  namecheap_client_ip: process.env.NAMECHEAP_CLIENT_IP,
+  namecheap_env: process.env.NAMECHEAP_ENV || 'production',
 };
