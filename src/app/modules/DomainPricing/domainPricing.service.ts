@@ -13,7 +13,7 @@ import {
   FALLBACK_REGISTER_PRICE_USD,
   IDomainPricing,
 } from './domainPricing.interface';
-import { getRenewPriceUSD } from '../../utils/namecheap';
+import { getRenewPriceUSD, peekCachedRenewPriceUSD } from '../../utils/namecheap';
 
 // ─── In-memory cache (register prices by TLD) ───
 let priceCache: Map<string, number> | null = null;
@@ -117,7 +117,34 @@ export const getDomainPriceUSD = async (tld: string): Promise<number> => {
 };
 
 // ─── Public (active prices for website) ───
-// Register = admin sell price. Renew = live from registrar (Namecheap).
+// Register = admin sell price (DB). Renew = registrar when cached, else DB snapshot.
+// IMPORTANT: Never block this endpoint on live Namecheap calls — the public
+// website axios client times out at 15s and would show empty / fallback prices.
+
+/** Warm renew cache + persist snapshots without delaying the HTTP response.
+ *  Only fetches TLDs that are not already in the in-memory cache. */
+const refreshRenewSnapshotsInBackground = (tlds: string[]) => {
+  const missing = tlds.filter((tld) => peekCachedRenewPriceUSD(tld) == null);
+  if (!missing.length) return;
+
+  void (async () => {
+    await Promise.all(
+      missing.map(async (tld) => {
+        try {
+          const live = await getRenewPriceUSD(tld);
+          if (live && live > 0) {
+            await DomainPricing.updateOne(
+              { tld },
+              { $set: { renewPriceUSD: parseFloat(live.toFixed(2)) } },
+            );
+          }
+        } catch {
+          // Background only — ignore failures
+        }
+      }),
+    );
+  })();
+};
 
 export const getPublicPricing = async () => {
   await seedDomainPricingIfEmpty();
@@ -126,14 +153,27 @@ export const getPublicPricing = async () => {
     .sort({ tld: 1 })
     .lean();
 
-  const withRenew = await attachLiveRenewPrices(rows);
-  return withRenew.map((r) => ({
-    tld: r.tld,
-    registerPriceUSD: r.registerPriceUSD,
-    renewPriceUSD: r.renewPriceUSD,
-    transferPriceUSD: r.transferPriceUSD ?? r.registerPriceUSD,
-    renewPriceSource: r.renewPriceSource,
-  }));
+  const payload = rows.map((r) => {
+    const cached = peekCachedRenewPriceUSD(r.tld);
+    const renewFromCache = cached && cached > 0 ? cached : null;
+    const renewFromDb =
+      typeof r.renewPriceUSD === 'number' && r.renewPriceUSD > 0
+        ? r.renewPriceUSD
+        : null;
+    const renewPriceUSD =
+      renewFromCache ?? renewFromDb ?? r.registerPriceUSD;
+
+    return {
+      tld: r.tld,
+      registerPriceUSD: r.registerPriceUSD,
+      renewPriceUSD: parseFloat(Number(renewPriceUSD).toFixed(2)),
+      transferPriceUSD: r.transferPriceUSD ?? r.registerPriceUSD,
+      renewPriceSource: renewFromCache ? ('provider' as const) : ('fallback' as const),
+    };
+  });
+
+  refreshRenewSnapshotsInBackground(rows.map((r) => r.tld));
+  return payload;
 };
 
 // ─── Admin CRUD ───

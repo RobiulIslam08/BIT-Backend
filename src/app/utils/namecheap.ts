@@ -103,6 +103,18 @@ const renewPriceCache = new Map<string, CachedPrice>();
 const PRICE_CACHE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /**
+ * Read a cached renew price without hitting the registrar.
+ * Used by the public pricing endpoint so the website never blocks on Namecheap.
+ */
+export const peekCachedRenewPriceUSD = (tld: string): number | null => {
+  const key = tld.replace(/^\./, '').toLowerCase();
+  if (!key) return null;
+  const cached = renewPriceCache.get(key);
+  if (cached && Date.now() - cached.at < PRICE_CACHE_MS) return cached.priceUSD;
+  return null;
+};
+
+/**
  * Get the live RENEW price (in USD) for a TLD from the registrar.
  * This is the amount the platform is charged to renew — passed through
  * to the customer as their renewal fee.

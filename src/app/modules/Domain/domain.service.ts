@@ -14,6 +14,8 @@ import axios from 'axios';
 import { parseStringPromise } from 'xml2js';
 import AppError from '../../errors/AppError';
 import httpStatus from 'http-status';
+import { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
+import { getRenewPriceUSD } from '../../utils/namecheap';
 
 // ─── Namecheap TLD suggestions list ───
 const SUGGESTION_TLDS = [
@@ -221,6 +223,10 @@ export interface DomainCheckResult {
   premiumPrice?: number;
   icannFee: number;
   errorNo: string;
+  /** BIT sell (register) price for this TLD — from admin Domain Pricing. */
+  registerPriceUSD?: number;
+  /** Next-year renew fee from the registrar (live). */
+  renewPriceUSD?: number | null;
 }
 
 export interface DomainSearchResponse {
@@ -229,6 +235,53 @@ export interface DomainSearchResponse {
   suggestions: DomainCheckResult[];
   detectedIp?: string; // for debugging
 }
+
+const extractTld = (domain: string): string => {
+  const parts = String(domain || '').toLowerCase().split('.');
+  if (parts.length < 2) return 'com';
+  return parts.slice(1).join('.');
+};
+
+/** Attach BIT register + registrar renew prices for unique TLDs in the result set. */
+const attachSellPrices = async (results: DomainCheckResult[]): Promise<DomainCheckResult[]> => {
+  const allTlds = [...new Set(results.map((r) => extractTld(r.domain)))];
+  // Renew is only shown for available domains — skip registrar calls for taken ones.
+  const renewTlds = [
+    ...new Set(
+      results.filter((r) => r.available).map((r) => extractTld(r.domain)),
+    ),
+  ];
+
+  const registerByTld = new Map<string, number>();
+  const renewByTld = new Map<string, number | null>();
+
+  await Promise.all(
+    allTlds.map(async (tld) => {
+      registerByTld.set(tld, await getDomainPriceUSD(tld));
+    }),
+  );
+
+  await Promise.all(
+    renewTlds.map(async (tld) => {
+      const renew = await getRenewPriceUSD(tld);
+      renewByTld.set(tld, renew && renew > 0 ? parseFloat(renew.toFixed(2)) : null);
+    }),
+  );
+
+  return results.map((r) => {
+    const tld = extractTld(r.domain);
+    const registerFromDb = registerByTld.get(tld) ?? 20;
+    const registerPriceUSD =
+      r.isPremium && typeof r.premiumPrice === 'number' && r.premiumPrice > 0
+        ? r.premiumPrice
+        : registerFromDb;
+    return {
+      ...r,
+      registerPriceUSD,
+      renewPriceUSD: r.available ? (renewByTld.get(tld) ?? null) : null,
+    };
+  });
+};
 
 // ─── Main Service Function ───
 export const checkDomainAvailability = async (domainName: string): Promise<DomainSearchResponse> => {
@@ -260,15 +313,16 @@ export const checkDomainAvailability = async (domainName: string): Promise<Domai
 
   // ─── Call Namecheap ───
   const results = await callNamecheapCheck(allDomainsToCheck);
+  const withPrices = await attachSellPrices(results);
 
-  const primaryResult = results.find(
+  const primaryResult = withPrices.find(
     (r) => r.domain.toLowerCase() === primaryDomain.toLowerCase(),
   );
   if (!primaryResult) {
     throw new AppError(httpStatus.BAD_GATEWAY, 'Primary domain result not found in API response');
   }
 
-  const suggestions = results.filter(
+  const suggestions = withPrices.filter(
     (r) => r.domain.toLowerCase() !== primaryDomain.toLowerCase(),
   );
 
