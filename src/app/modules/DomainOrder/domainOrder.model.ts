@@ -73,6 +73,8 @@ const DomainOrderSchema = new Schema<IDomainOrder>(
     },
     failureReason: { type: String, trim: true, maxlength: 1000 },
     refundedAt: { type: Date },
+    // Set when an unpaid checkout is auto-cancelled as abandoned. Drives TTL cleanup.
+    abandonedAt: { type: Date },
 
     // ─── Namecheap Registration ───
     namecheapOrderId: { type: String, trim: true },
@@ -106,4 +108,39 @@ DomainOrderSchema.index({ userId: 1, orderStatus: 1, createdAt: -1 });
 // Expiry monitoring
 DomainOrderSchema.index({ expiresAt: 1, orderStatus: 1 });
 
+// ─── TTL: retention cleanup for abandoned checkouts ───
+// Abandoned unpaid checkouts are first gracefully cancelled by the sweeper
+// (orderStatus → 'cancelled', abandonedAt set) so we keep a short audit trail
+// (conversion/abandonment analytics). This TTL then permanently removes them
+// 30 days after they were abandoned. Only documents that have `abandonedAt`
+// set are affected — real (admin-cancelled/active/etc.) orders lack this field
+// and are never touched by TTL.
+DomainOrderSchema.index(
+  { abandonedAt: 1 },
+  {
+    expireAfterSeconds: 60 * 60 * 24 * 30, // 30 days retention
+    name: 'ttl_abandoned_retention',
+  },
+);
+
 export const DomainOrder = model<IDomainOrder>('DomainOrder', DomainOrderSchema);
+
+/**
+ * Drop a leftover hard-delete TTL that briefly existed during development.
+ * Mongoose never removes indexes that leave the schema, so without this the
+ * old `ttl_abandoned_pending_payment` index would keep hard-deleting unpaid
+ * checkouts after 3h and wipe the 30-day audit trail. Safe / idempotent.
+ */
+export const dropStaleAbandonedHardDeleteIndex = async (): Promise<void> => {
+  const STALE_NAME = 'ttl_abandoned_pending_payment';
+  try {
+    const indexes = await DomainOrder.collection.indexes();
+    const exists = indexes.some((idx) => idx.name === STALE_NAME);
+    if (!exists) return;
+    await DomainOrder.collection.dropIndex(STALE_NAME);
+    console.log(`[DomainOrder] Dropped stale index "${STALE_NAME}".`);
+  } catch (err) {
+    // IndexAlreadyExists / NamespaceNotFound / race — never block startup.
+    console.error('[DomainOrder] Could not drop stale TTL index (non-critical):', (err as Error).message);
+  }
+};

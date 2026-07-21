@@ -44,6 +44,7 @@ export interface IDomainOrder {
   orderStatus: TDomainOrderStatus;
   failureReason?: string;    // if registration failed
   refundedAt?: Date;
+  abandonedAt?: Date;        // set when an unpaid checkout is auto-cancelled; drives TTL cleanup
 
   // ─── Namecheap Registration ───
   namecheapOrderId?: string; // Namecheap's returned order ID

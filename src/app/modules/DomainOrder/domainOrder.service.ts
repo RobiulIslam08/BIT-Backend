@@ -15,6 +15,7 @@ import { parseStringPromise } from 'xml2js';
 import httpStatus from 'http-status';
 import AppError from '../../errors/AppError';
 import { DomainOrder } from './domainOrder.model';
+import { Domain } from '../Domain/domainAsset.model';
 import { IDomainOrder, TSupportedCurrency } from './domainOrder.interface';
 import {
   createPayPalOrder,
@@ -23,35 +24,10 @@ import {
 } from '../../utils/paypal';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
+import { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
 
-// ─── Fixed Domain Pricing (USD) ───
-// Sell price to customer. Your cost is lower (Namecheap charges you separately).
-export const DOMAIN_PRICING: Record<string, number> = {
-  com: 15,
-  net: 17,
-  org: 14,
-  io: 55,
-  co: 32,
-  info: 12,
-  biz: 17,
-  online: 8,
-  tech: 35,
-  store: 10,
-  shop: 22,
-  app: 20,
-  dev: 14,
-  site: 8,
-  website: 8,
-  cloud: 22,
-  digital: 32,
-  agency: 32,
-  solutions: 22,
-  services: 22,
-};
-
-export const getDomainPriceUSD = (tld: string): number => {
-  return DOMAIN_PRICING[tld.toLowerCase()] ?? 20; // default $20 for unknown TLDs
-};
+// Re-export for any legacy imports that expected it from this module.
+export { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
 
 // ─── Currency Conversion ───
 // Cache exchange rates for 1 hour to avoid excessive API calls
@@ -282,7 +258,7 @@ export const createPayPalOrderForDomain = async (payload: {
   const sld = domainName.substring(0, dotIndex).toLowerCase();
   const tld = domainName.substring(dotIndex + 1).toLowerCase();
 
-  // Check if domain is already active in our system
+  // Check if domain is already active in our system (purchase orders)
   const existingActive = await DomainOrder.findOne({
     domainName: domainName.toLowerCase(),
     orderStatus: 'active',
@@ -291,8 +267,18 @@ export const createPayPalOrderForDomain = async (payload: {
     throw new AppError(httpStatus.CONFLICT, `Domain "${domainName}" is already registered.`);
   }
 
-  // Pricing
-  const sellPriceUSD = getDomainPriceUSD(tld);
+  // Also block purchase if the domain already exists as a managed asset
+  // (e.g. admin-assigned legacy domain owned by another/same user).
+  const existingAsset = await Domain.findOne({ domainName: domainName.toLowerCase() }).lean();
+  if (existingAsset) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      `Domain "${domainName}" is already registered in our system.`,
+    );
+  }
+
+  // Pricing (from admin-maintainable DomainPricing collection)
+  const sellPriceUSD = await getDomainPriceUSD(tld);
   const { displayAmount, rate } = await convertFromUSD(sellPriceUSD, displayCurrency);
 
   // Create PayPal order (server-side)
@@ -449,6 +435,38 @@ export const completeDomainPurchase = async (payload: {
 
       await session.commitTransaction();
 
+      // Register the canonical Domain asset so it appears in "My Domains"
+      // alongside any legacy admin-added domains. Idempotent + non-critical.
+      try {
+        await Domain.updateOne(
+          { domainName: pendingOrder.domainName },
+          {
+            $setOnInsert: {
+              userId: pendingOrder.userId,
+              domainName: pendingOrder.domainName,
+              sld: pendingOrder.sld,
+              tld: pendingOrder.tld,
+              source: 'purchase',
+              registrar: 'BIT',
+              managedByNamecheap: true,
+              status: 'active',
+              registeredAt: ncResult.registeredAt,
+              expiresAt: ncResult.expiresAt,
+              registrationYears: pendingOrder.registrationYears || 1,
+              renewPriceSource: 'provider',
+              whoisPrivacy: pendingOrder.whoisPrivacy,
+              autoRenew: false,
+              autoRenewStatus: 'inactive',
+              nameservers: [],
+              domainOrderId: pendingOrder._id,
+            },
+          },
+          { upsert: true },
+        );
+      } catch (assetErr) {
+        console.error('[DomainPurchase] Domain asset upsert failed (non-critical):', assetErr);
+      }
+
       // Send success email (outside transaction — non-critical)
       try {
         await sendEmail(
@@ -569,7 +587,15 @@ export const getAllDomainOrders = async (query: Record<string, unknown>) => {
   const skip = (page - 1) * limit;
 
   const filter: Record<string, unknown> = {};
-  if (query.orderStatus) filter.orderStatus = query.orderStatus;
+  if (query.orderStatus) {
+    filter.orderStatus = query.orderStatus;
+  } else {
+    // By default hide unpaid checkouts (never-paid intents) and auto-cancelled
+    // abandoned checkouts so they don't clutter real orders. Admins can still
+    // filter to "pending_payment" or "cancelled" explicitly to audit them.
+    filter.orderStatus = { $ne: 'pending_payment' };
+    filter.abandonedAt = { $exists: false };
+  }
   if (query.paymentStatus) filter.paymentStatus = query.paymentStatus;
   if (query.tld) filter.tld = query.tld;
 
@@ -605,6 +631,41 @@ export const updateDomainOrderStatus = async (
   const order = await DomainOrder.findByIdAndUpdate(orderId, { $set: updates }, { new: true, runValidators: true });
   if (!order) throw new AppError(httpStatus.NOT_FOUND, 'Domain order not found.');
   return order;
+};
+
+/**
+ * Sweep abandoned checkouts.
+ * A customer may click "Buy Now" (which creates a `pending_payment` order and a
+ * PayPal order) but never complete payment. PayPal order tokens expire in ~3
+ * hours, after which the order can never be captured. Instead of hard-deleting,
+ * we gracefully cancel such stale, never-paid orders and stamp `abandonedAt`
+ * (kept ~30 days by a TTL index for audit/analytics, then auto-removed).
+ *
+ * Idempotent and safe to run on a schedule (called by the renewal-engine cron).
+ * @returns number of orders cancelled in this run.
+ */
+export const sweepAbandonedCheckouts = async (olderThanMinutes = 180): Promise<number> => {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+  const result = await DomainOrder.updateMany(
+    {
+      orderStatus: 'pending_payment',
+      paymentStatus: 'pending',
+      createdAt: { $lte: cutoff },
+    },
+    {
+      $set: {
+        orderStatus: 'cancelled',
+        paymentStatus: 'failed',
+        failureReason: 'Abandoned checkout — payment was not completed.',
+        abandonedAt: new Date(),
+      },
+    },
+  );
+  const count = result.modifiedCount ?? 0;
+  if (count > 0) {
+    console.log(`[DomainOrder] Swept ${count} abandoned checkout(s).`);
+  }
+  return count;
 };
 
 /**
