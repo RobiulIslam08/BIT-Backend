@@ -5,6 +5,7 @@
 import httpStatus from 'http-status';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
+import AppError from '../../errors/AppError';
 import * as HostingService from './hosting.service';
 
 // ─── ADMIN ───
@@ -130,6 +131,32 @@ const downloadMyProject = catchAsync(async (req, res) => {
     req.params.id as string,
     isAdmin,
   );
+  // Stream from disk — do not load entire ZIP into memory
+  res.download(absolutePath, downloadName);
+});
+
+const createDownloadToken = catchAsync(async (req, res) => {
+  const userId = req.user.userId as string;
+  const isAdmin = req.user.role === 'admin';
+  const result = await HostingService.createProjectDownloadToken(
+    userId,
+    req.params.id as string,
+    isAdmin,
+  );
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Download link created.',
+    data: result,
+  });
+});
+
+const downloadByToken = catchAsync(async (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Download token is required.');
+  }
+  const { absolutePath, downloadName } = await HostingService.resolveProjectDownloadByToken(token);
   res.download(absolutePath, downloadName);
 });
 
@@ -145,4 +172,6 @@ export const HostingControllers = {
   getMyHostings,
   getMyHostingById,
   downloadMyProject,
+  createDownloadToken,
+  downloadByToken,
 };

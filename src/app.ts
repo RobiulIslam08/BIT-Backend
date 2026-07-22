@@ -11,6 +11,10 @@ import notFound from './app/middleware/notFound';
 
 const app: Application = express();
 
+// Behind Dokploy / Traefik / Nginx the real client IP is in X-Forwarded-For.
+// Without this, express-rate-limit throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set('trust proxy', 1);
+
 // ─── Security: HTTP Headers ───
 // Helmet sets Content-Security-Policy, X-Frame-Options, etc.
 app.use(
@@ -45,8 +49,11 @@ app.use(express.json({ limit: '2mb' }));        // Limit JSON payload size
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(cookieParser());
 
-// ─── Static Files: Uploaded screenshots ───
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+// ─── Static Files: Uploaded files ───
+app.use(
+  '/uploads',
+  express.static(process.env.UPLOAD_DIR?.trim() || path.join(process.cwd(), 'uploads')),
+);
 
 // Ensure MongoDB is connected before processing any request (critical for Vercel serverless)
 app.use(async (req: Request, res: Response, next: NextFunction) => {

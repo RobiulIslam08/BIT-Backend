@@ -11,6 +11,7 @@ import httpStatus from 'http-status';
 import auth from '../../middleware/auth';
 import validateRequest from '../../middleware/validationRequest';
 import AppError from '../../errors/AppError';
+import { getHostingProjectsDir } from '../../utils/uploadPaths';
 import { HostingControllers } from './hosting.controller';
 import { HostingValidation } from './hosting.validation';
 
@@ -19,22 +20,14 @@ const router = express.Router();
 /** Max project archive size — covers 200–400 MB client projects with headroom. */
 export const HOSTING_PROJECT_MAX_BYTES = 500 * 1024 * 1024; // 500 MB
 
-const PROJECT_UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'hosting-projects');
-
-const ensureUploadDir = () => {
-  if (!fs.existsSync(PROJECT_UPLOAD_DIR)) {
-    fs.mkdirSync(PROJECT_UPLOAD_DIR, { recursive: true });
-  }
-};
-
 // Disk storage — large ZIPs must NOT use memoryStorage (would OOM at 200–400 MB).
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     try {
-      ensureUploadDir();
-      cb(null, PROJECT_UPLOAD_DIR);
+      const dir = getHostingProjectsDir();
+      cb(null, dir);
     } catch (err) {
-      cb(err as Error, PROJECT_UPLOAD_DIR);
+      cb(err as Error, getHostingProjectsDir());
     }
   },
   filename: (_req, file, cb) => {
@@ -62,6 +55,12 @@ const upload = multer({
 const handleProjectUpload = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   upload.single('projectFile')(req, res, (err: unknown) => {
     if (!err) return next();
+
+    // Clean orphaned temp file if multer wrote one before failing
+    const f = (req as express.Request & { file?: Express.Multer.File }).file;
+    if (f?.path && fs.existsSync(f.path)) {
+      try { fs.unlinkSync(f.path); } catch { /* ignore */ }
+    }
 
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
@@ -92,12 +91,21 @@ const downloadLimit = rateLimit({
   skip: () => process.env.NODE_ENV === 'test',
 });
 
+// ─── PUBLIC: token-based streaming download (for large ZIPs) ───
+router.get('/download-file', downloadLimit, HostingControllers.downloadByToken);
+
 // ─── ADMIN: user picker ───
 router.get('/admin/users', auth('admin'), HostingControllers.searchUsers);
 
 // ─── USER: own hostings ───
 router.get('/my', auth('user', 'admin'), HostingControllers.getMyHostings);
 router.get('/my/:id', auth('user', 'admin'), HostingControllers.getMyHostingById);
+router.post(
+  '/my/:id/download-token',
+  auth('user', 'admin'),
+  downloadLimit,
+  HostingControllers.createDownloadToken,
+);
 router.get(
   '/my/:id/download',
   auth('user', 'admin'),

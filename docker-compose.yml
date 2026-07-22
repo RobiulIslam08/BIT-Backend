@@ -1,0 +1,29 @@
+# ============================================
+# BIT SOFTWARE BACKEND — Dokploy / Docker Compose
+# ============================================
+# In Dokploy:
+# 1) Use this compose (or add the volume + env below to your existing service)
+# 2) Mount volume so ZIPs survive redeploys
+# 3) Increase Traefik readTimeout (see DOKPLOY-UPLOADS.md)
+
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      UPLOAD_DIR: /app/uploads
+      # DATABASE_URL, JWT_*, PAYPAL_*, FRONTEND_URL, etc. — set in Dokploy UI
+    volumes:
+      # CRITICAL: without this, every redeploy deletes uploaded ZIP files
+      - hosting_uploads:/app/uploads
+    ports:
+      - "5000:5000"
+    # If Dokploy manages Traefik labels, also add (or configure in Dokploy UI):
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.services.bit-backend.loadbalancer.server.port=5000"
+
+volumes:
+  hosting_uploads:

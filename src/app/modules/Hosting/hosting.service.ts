@@ -11,17 +11,18 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import httpStatus from 'http-status';
+import jwt from 'jsonwebtoken';
 import AppError from '../../errors/AppError';
+import config from '../../config';
 import { Hosting } from './hosting.model';
 import { IHosting } from './hosting.interface';
 import { User } from '../User/user.model';
+import { getHostingProjectsDir } from '../../utils/uploadPaths';
 
-const PROJECT_UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'hosting-projects');
+const PROJECT_UPLOAD_DIR = () => getHostingProjectsDir();
 
 const ensureUploadDir = () => {
-  if (!fs.existsSync(PROJECT_UPLOAD_DIR)) {
-    fs.mkdirSync(PROJECT_UPLOAD_DIR, { recursive: true });
-  }
+  getHostingProjectsDir();
 };
 
 /** Strip admin-only fields before sending to customers. */
@@ -192,7 +193,7 @@ export const deleteHosting = async (id: string) => {
 
   // Remove project file from disk if present
   if (hosting.projectFile?.storedName) {
-    const filePath = path.join(PROJECT_UPLOAD_DIR, hosting.projectFile.storedName);
+    const filePath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (err) {
@@ -236,7 +237,7 @@ export const uploadProjectFile = async (
 
   // Delete previous file if any
   if (hosting.projectFile?.storedName) {
-    const oldPath = path.join(PROJECT_UPLOAD_DIR, hosting.projectFile.storedName);
+    const oldPath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
     try {
       if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     } catch {
@@ -246,7 +247,7 @@ export const uploadProjectFile = async (
 
   const ext = path.extname(file.originalname).toLowerCase() || '.zip';
   const storedName = `${hosting._id}-${Date.now()}${ext}`;
-  const dest = path.join(PROJECT_UPLOAD_DIR, storedName);
+  const dest = path.join(PROJECT_UPLOAD_DIR(), storedName);
 
   // Multer diskStorage already wrote to disk (file.path). Rename into final name.
   // Fallback: memoryStorage buffer (should not happen for large files).
@@ -281,7 +282,7 @@ export const removeProjectFile = async (id: string) => {
   if (!hosting) throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');
 
   if (hosting.projectFile?.storedName) {
-    const filePath = path.join(PROJECT_UPLOAD_DIR, hosting.projectFile.storedName);
+    const filePath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch {
@@ -328,9 +329,83 @@ export const getProjectDownloadPath = async (
     throw new AppError(httpStatus.NOT_FOUND, 'No project file available for download.');
   }
 
-  const absolutePath = path.join(PROJECT_UPLOAD_DIR, hosting.projectFile.storedName);
+  const absolutePath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
   if (!fs.existsSync(absolutePath)) {
-    throw new AppError(httpStatus.NOT_FOUND, 'Project file is missing on the server.');
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      'Project file is missing on the server. Re-upload the ZIP or mount a persistent uploads volume.',
+    );
+  }
+
+  return {
+    absolutePath,
+    downloadName: hosting.projectFile.originalName || 'project.zip',
+  };
+};
+
+type TDownloadTokenPayload = {
+  hostingId: string;
+  userId: string;
+  purpose: 'hosting-project-download';
+};
+
+/** Short-lived token so the browser can stream large ZIPs natively (no JS blob). */
+export const createProjectDownloadToken = async (
+  userId: string,
+  hostingId: string,
+  isAdmin = false,
+): Promise<{ token: string; expiresIn: number; downloadPath: string }> => {
+  await getProjectDownloadPath(userId, hostingId, isAdmin);
+
+  const expiresIn = 5 * 60; // 5 minutes
+  const secret = config.jwt_access_secret;
+  if (!secret) throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'JWT secret not configured.');
+
+  const token = jwt.sign(
+    {
+      hostingId,
+      userId,
+      purpose: 'hosting-project-download',
+    } satisfies TDownloadTokenPayload,
+    secret,
+    { expiresIn },
+  );
+
+  return {
+    token,
+    expiresIn,
+    downloadPath: `/api/v1/hostings/download-file?token=${encodeURIComponent(token)}`,
+  };
+};
+
+export const resolveProjectDownloadByToken = async (
+  token: string,
+): Promise<{ absolutePath: string; downloadName: string }> => {
+  const secret = config.jwt_access_secret;
+  if (!secret) throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'JWT secret not configured.');
+
+  let payload: TDownloadTokenPayload;
+  try {
+    payload = jwt.verify(token, secret) as TDownloadTokenPayload;
+  } catch {
+    throw new AppError(httpStatus.UNAUTHORIZED, 'Download link expired or invalid. Please try again.');
+  }
+
+  if (payload.purpose !== 'hosting-project-download' || !payload.hostingId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, 'Invalid download token.');
+  }
+
+  const hosting = await Hosting.findById(payload.hostingId).lean();
+  if (!hosting?.projectFile?.storedName) {
+    throw new AppError(httpStatus.NOT_FOUND, 'No project file available for download.');
+  }
+
+  const absolutePath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
+  if (!fs.existsSync(absolutePath)) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      'Project file is missing on the server. Re-upload the ZIP or mount a persistent uploads volume.',
+    );
   }
 
   return {
