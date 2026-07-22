@@ -256,10 +256,18 @@ const forgetPassword = async (email: string): Promise<void> => {
     await sendEmail(user.email, emailHtml);
   } catch (error) {
     console.error('Failed to send password reset OTP email:', error);
+    // Clear the OTP we just saved since the email never reached the user.
+    await User.findByIdAndUpdate(user._id, { otp: null, otpExpires: null });
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Failed to send OTP email. Please try again later or contact support.',
+    );
   }
 
   // Log in console for development/backup
-  console.log(`[DEV ONLY] OTP for ${email} is: ${otp}`);
+  if (config.NODE_ENV === 'development') {
+    console.log(`[DEV ONLY] OTP for ${email} is: ${otp}`);
+  }
 };
 
 // ==================== RESET PASSWORD ====================
