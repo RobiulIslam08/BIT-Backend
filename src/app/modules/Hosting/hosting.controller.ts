@@ -89,6 +89,61 @@ const uploadProject = catchAsync(async (req, res) => {
   });
 });
 
+const uploadProjectChunk = catchAsync(async (req, res) => {
+  const file = req.file as Express.Multer.File;
+  const chunkIndex = parseInt(String(req.body.chunkIndex), 10);
+  const totalChunks = parseInt(String(req.body.totalChunks), 10);
+  const uploadId = String(req.body.uploadId || '');
+
+  const result = await HostingService.saveProjectChunk({
+    hostingId: req.params.id as string,
+    uploadId,
+    chunkIndex,
+    totalChunks,
+    file,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `Chunk ${chunkIndex + 1}/${totalChunks} received.`,
+    data: result,
+  });
+});
+
+const completeProjectChunks = catchAsync(async (req, res) => {
+  const adminId = req.user.userId as string;
+  const { uploadId, totalChunks, originalName, mimeType, totalSize } = req.body;
+
+  const result = await HostingService.completeChunkedProjectUpload({
+    hostingId: req.params.id as string,
+    adminId,
+    uploadId: String(uploadId || ''),
+    totalChunks: parseInt(String(totalChunks), 10),
+    originalName: String(originalName || ''),
+    mimeType: mimeType ? String(mimeType) : undefined,
+    totalSize: totalSize !== undefined ? Number(totalSize) : undefined,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Project file uploaded.',
+    data: result,
+  });
+});
+
+const abortProjectChunks = catchAsync(async (req, res) => {
+  const uploadId = String(req.body.uploadId || req.query.uploadId || '');
+  const result = await HostingService.abortChunkedProjectUpload(uploadId);
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Upload aborted.',
+    data: result,
+  });
+});
+
 const removeProject = catchAsync(async (req, res) => {
   const result = await HostingService.removeProjectFile(req.params.id as string);
   sendResponse(res, {
@@ -168,6 +223,9 @@ export const HostingControllers = {
   deleteHosting,
   searchUsers,
   uploadProject,
+  uploadProjectChunk,
+  completeProjectChunks,
+  abortProjectChunks,
   removeProject,
   getMyHostings,
   getMyHostingById,

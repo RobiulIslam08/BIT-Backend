@@ -277,6 +277,170 @@ export const uploadProjectFile = async (
   return hosting.toObject() as IHosting;
 };
 
+// ─── Chunked upload (production-safe for Traefik / large ZIPs) ───
+
+const getChunkTempDir = (uploadId: string) => {
+  const safeId = String(uploadId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+  if (!safeId) throw new AppError(httpStatus.BAD_REQUEST, 'Invalid uploadId.');
+  const dir = path.join(PROJECT_UPLOAD_DIR(), '.chunks', safeId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+};
+
+const removeDirRecursive = (dir: string) => {
+  try {
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+};
+
+export const saveProjectChunk = async (payload: {
+  hostingId: string;
+  uploadId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  file: Express.Multer.File;
+}) => {
+  const { hostingId, uploadId, chunkIndex, totalChunks, file } = payload;
+
+  if (!file) throw new AppError(httpStatus.BAD_REQUEST, 'Chunk file is required.');
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid chunkIndex.');
+  }
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 500) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid totalChunks.');
+  }
+  if (chunkIndex >= totalChunks) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'chunkIndex out of range.');
+  }
+
+  const hosting = await Hosting.findById(hostingId);
+  if (!hosting) {
+    if (file.path && fs.existsSync(file.path)) {
+      try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+    }
+    throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');
+  }
+
+  const dir = getChunkTempDir(uploadId);
+  const dest = path.join(dir, `${chunkIndex}.part`);
+
+  if (file.path && fs.existsSync(file.path)) {
+    try {
+      fs.renameSync(file.path, dest);
+    } catch {
+      fs.copyFileSync(file.path, dest);
+      try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+    }
+  } else if (file.buffer) {
+    fs.writeFileSync(dest, file.buffer);
+  } else {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Uploaded chunk data is missing.');
+  }
+
+  return {
+    uploadId,
+    chunkIndex,
+    totalChunks,
+    received: true,
+  };
+};
+
+export const completeChunkedProjectUpload = async (payload: {
+  hostingId: string;
+  adminId: string;
+  uploadId: string;
+  totalChunks: number;
+  originalName: string;
+  mimeType?: string;
+  totalSize?: number;
+}) => {
+  const { hostingId, adminId, uploadId, totalChunks, originalName, mimeType, totalSize } = payload;
+
+  if (!originalName?.trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'originalName is required.');
+  }
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 500) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid totalChunks.');
+  }
+
+  const hosting = await Hosting.findById(hostingId);
+  if (!hosting) throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');
+
+  const dir = getChunkTempDir(uploadId);
+
+  // Ensure every chunk exists
+  for (let i = 0; i < totalChunks; i++) {
+    const part = path.join(dir, `${i}.part`);
+    if (!fs.existsSync(part)) {
+      throw new AppError(httpStatus.BAD_REQUEST, `Missing chunk ${i + 1} of ${totalChunks}. Please retry upload.`);
+    }
+  }
+
+  ensureUploadDir();
+
+  // Remove previous project file
+  if (hosting.projectFile?.storedName) {
+    const oldPath = path.join(PROJECT_UPLOAD_DIR(), hosting.projectFile.storedName);
+    try {
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const ext = path.extname(originalName).toLowerCase() || '.zip';
+  const storedName = `${hosting._id}-${Date.now()}${ext}`;
+  const dest = path.join(PROJECT_UPLOAD_DIR(), storedName);
+
+  // Assemble chunks in order
+  const writeStream = fs.createWriteStream(dest);
+  try {
+    for (let i = 0; i < totalChunks; i++) {
+      const part = path.join(dir, `${i}.part`);
+      const data = fs.readFileSync(part);
+      writeStream.write(data);
+    }
+    await new Promise<void>((resolve, reject) => {
+      writeStream.end(() => resolve());
+      writeStream.on('error', reject);
+    });
+  } catch (err) {
+    try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch { /* ignore */ }
+    throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to assemble project file.');
+  } finally {
+    removeDirRecursive(dir);
+  }
+
+  const size = typeof totalSize === 'number' && totalSize > 0
+    ? totalSize
+    : fs.statSync(dest).size;
+
+  if (size > 500 * 1024 * 1024) {
+    try { fs.unlinkSync(dest); } catch { /* ignore */ }
+    throw new AppError(httpStatus.REQUEST_ENTITY_TOO_LARGE, 'File too large. Maximum project ZIP size is 500 MB.');
+  }
+
+  hosting.projectFile = {
+    originalName: originalName.trim(),
+    storedName,
+    mimeType: mimeType || 'application/zip',
+    size,
+    uploadedAt: new Date(),
+    uploadedBy: new mongoose.Types.ObjectId(adminId),
+  };
+
+  await hosting.save();
+  return hosting.toObject() as IHosting;
+};
+
+export const abortChunkedProjectUpload = async (uploadId: string) => {
+  const dir = getChunkTempDir(uploadId);
+  removeDirRecursive(dir);
+  return { aborted: true };
+};
+
 export const removeProjectFile = async (id: string) => {
   const hosting = await Hosting.findById(id);
   if (!hosting) throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');

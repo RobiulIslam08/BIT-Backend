@@ -56,26 +56,60 @@ Compose service হলে Dokploy Advanced → Mounts দিয়ে আলাদ�
 
 ---
 
-## C) Traefik readTimeout (বড় ZIP এর জন্য)
+## C) Traefik timeout — UI-তে নেই, VPS SSH দিয়ে করতে হবে
 
-Default 60s → বড় upload 499/504 দেয়।
+Dokploy Application → Advanced → Traefik শুধু domain/router দেখায়।  
+**readTimeout** static config-এ থাকে — file:
 
-Traefik config (`web` + `websecure`):
+`/etc/dokploy/traefik/traefik.yml`
 
-```yaml
-transport:
-  respondingTimeouts:
-    readTimeout: 0s
-    writeTimeout: 0s
-    idleTimeout: 600s
-```
+### SSH দিয়ে fix (Hostinger VPS)
 
 ```bash
-docker ps | grep -i traefik
-docker restart <traefik-container-name>
+# 1) SSH করে VPS-এ ঢুকুন, তারপর:
+sudo nano /etc/dokploy/traefik/traefik.yml
 ```
 
-Dokploy UI তে: Application → **Advanced** → **Traefik** (যদি custom config দেয়)।
+`entryPoints:` অংশে `web` এবং `websecure`-এর ভিতরে এভাবে `transport` যোগ করুন (আগের settings মুছবেন না):
+
+```yaml
+entryPoints:
+  web:
+    address: ":80"
+    transport:
+      respondingTimeouts:
+        readTimeout: 0s
+        writeTimeout: 0s
+        idleTimeout: 600s
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: 0s
+        writeTimeout: 0s
+        idleTimeout: 600s
+    http:
+      tls:
+        certResolver: letsencrypt
+```
+
+Save (`Ctrl+O`, Enter, `Ctrl+X`), তারপর:
+
+```bash
+docker restart dokploy-traefik
+```
+
+চেক:
+
+```bash
+docker ps | grep traefik
+docker logs dokploy-traefik --tail 30
+```
+
+### Dokploy UI-তে Traefik editor থাকলে
+
+কিছু version-এ: বাম সাইডবার → **Settings** / **Web Server** / **Traefik** → `traefik.yml` edit।  
+Application-এর ভিতরে Advanced → Traefik **নয়** — সেখানে timeout পাবেন না।
 
 ---
 

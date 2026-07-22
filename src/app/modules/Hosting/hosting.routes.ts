@@ -42,45 +42,59 @@ const upload = multer({
   limits: { fileSize: HOSTING_PROJECT_MAX_BYTES },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    const okExt = ['.zip', '.rar', '.7z', '.tar', '.gz'].includes(ext);
+    const okExt = ['.zip', '.rar', '.7z', '.tar', '.gz', '.part'].includes(ext) || !ext;
     const okMime =
       /zip|x-zip|x-rar|x-7z|x-tar|gzip|octet-stream/i.test(file.mimetype) ||
-      file.mimetype === 'application/x-compressed';
+      file.mimetype === 'application/x-compressed' ||
+      !file.mimetype;
     if (okExt || okMime) cb(null, true);
     else cb(new Error('Only archive files (ZIP, RAR, 7Z) are allowed.'));
   },
 });
 
+/** Smaller limit for individual chunks (~5–10 MB each). */
+const chunkUpload = multer({
+  storage,
+  limits: { fileSize: 12 * 1024 * 1024 }, // 12 MB per chunk
+  fileFilter: (_req, _file, cb) => cb(null, true),
+});
+
 /** Translate multer errors into clear API messages. */
-const handleProjectUpload = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  upload.single('projectFile')(req, res, (err: unknown) => {
-    if (!err) return next();
+const makeUploadHandler = (mw: express.RequestHandler, isChunk = false) => {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    mw(req, res, (err: unknown) => {
+      if (!err) return next();
 
-    // Clean orphaned temp file if multer wrote one before failing
-    const f = (req as express.Request & { file?: Express.Multer.File }).file;
-    if (f?.path && fs.existsSync(f.path)) {
-      try { fs.unlinkSync(f.path); } catch { /* ignore */ }
-    }
-
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return next(
-          new AppError(
-            httpStatus.REQUEST_ENTITY_TOO_LARGE,
-            'File too large. Maximum project ZIP size is 500 MB.',
-          ),
-        );
+      const f = (req as express.Request & { file?: Express.Multer.File }).file;
+      if (f?.path && fs.existsSync(f.path)) {
+        try { fs.unlinkSync(f.path); } catch { /* ignore */ }
       }
-      return next(new AppError(httpStatus.BAD_REQUEST, `Upload failed: ${err.message}`));
-    }
 
-    if (err instanceof Error) {
-      return next(new AppError(httpStatus.BAD_REQUEST, err.message));
-    }
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(
+            new AppError(
+              httpStatus.REQUEST_ENTITY_TOO_LARGE,
+              isChunk
+                ? 'Chunk too large. Try again.'
+                : 'File too large. Maximum project ZIP size is 500 MB.',
+            ),
+          );
+        }
+        return next(new AppError(httpStatus.BAD_REQUEST, `Upload failed: ${err.message}`));
+      }
 
-    return next(err);
-  });
+      if (err instanceof Error) {
+        return next(new AppError(httpStatus.BAD_REQUEST, err.message));
+      }
+
+      return next(err);
+    });
+  };
 };
+
+const handleProjectUpload = makeUploadHandler(upload.single('projectFile'), false);
+const handleChunkUpload = makeUploadHandler(chunkUpload.single('chunk'), true);
 
 const downloadLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -134,6 +148,22 @@ router.post(
   auth('admin'),
   handleProjectUpload,
   HostingControllers.uploadProject,
+);
+router.post(
+  '/:id/project/chunk',
+  auth('admin'),
+  handleChunkUpload,
+  HostingControllers.uploadProjectChunk,
+);
+router.post(
+  '/:id/project/complete',
+  auth('admin'),
+  HostingControllers.completeProjectChunks,
+);
+router.post(
+  '/:id/project/abort',
+  auth('admin'),
+  HostingControllers.abortProjectChunks,
 );
 router.delete('/:id/project', auth('admin'), HostingControllers.removeProject);
 
