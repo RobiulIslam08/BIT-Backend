@@ -66,6 +66,13 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, _next) => {
         message: 'Token has expired',
       },
     ];
+  } else if (err?.name === 'MulterError' || err?.code === 'LIMIT_FILE_SIZE') {
+    statusCode = 413;
+    message =
+      err?.code === 'LIMIT_FILE_SIZE'
+        ? 'File too large. Maximum project ZIP size is 500 MB.'
+        : err?.message || 'File upload failed.';
+    errorSources = [{ path: 'projectFile', message }];
   } else if (err instanceof Error) {
     message = err?.message;
     errorSources = [

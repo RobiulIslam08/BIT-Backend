@@ -27,15 +27,23 @@ import { connectDB } from './app/DB/connection';
 import { dropStaleAbandonedHardDeleteIndex } from './app/modules/DomainOrder/domainOrder.model';
 import { sweepAbandonedCheckouts } from './app/modules/DomainOrder/domainOrder.service';
 import { seedDomainPricingIfEmpty } from './app/modules/DomainPricing/domainPricing.service';
+import { seedHostingPlansIfEmpty } from './app/modules/HostingPlan/hostingPlan.service';
+import { sweepAbandonedHostingCheckouts } from './app/modules/HostingOrder/hostingOrder.service';
 
 const ABANDONED_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // every hour
 
 async function sweepAbandoned() {
   try {
     const n = await sweepAbandonedCheckouts();
-    if (n > 0) console.log(`[Housekeeping] Cancelled ${n} abandoned checkout(s).`);
+    if (n > 0) console.log(`[Housekeeping] Cancelled ${n} abandoned domain checkout(s).`);
   } catch (err) {
-    console.error('[Housekeeping] Abandoned checkout sweep failed (non-critical):', err);
+    console.error('[Housekeeping] Abandoned domain checkout sweep failed (non-critical):', err);
+  }
+  try {
+    const n = await sweepAbandonedHostingCheckouts();
+    if (n > 0) console.log(`[Housekeeping] Cancelled ${n} abandoned hosting checkout(s).`);
+  } catch (err) {
+    console.error('[Housekeeping] Abandoned hosting checkout sweep failed (non-critical):', err);
   }
 }
 
@@ -58,6 +66,13 @@ async function main() {
       await seedDomainPricingIfEmpty();
     } catch (err) {
       console.error('[Startup] Domain pricing seed failed (non-critical):', err);
+    }
+
+    // Seed default hosting plans if the collection is empty.
+    try {
+      await seedHostingPlansIfEmpty();
+    } catch (err) {
+      console.error('[Startup] Hosting plans seed failed (non-critical):', err);
     }
 
     // Sweep abandoned checkouts now, and every hour thereafter, so cleanup

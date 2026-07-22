@@ -86,22 +86,28 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
  * Create a PayPal order server-side (server-to-server).
  * @param amountUSD - Amount in USD
  * @param description - Order description shown to buyer
- * @param serviceType - 'gmb' | 'domain' — for correct return URLs
+ * @param serviceType - 'gmb' | 'domain' | 'hosting' — for correct return URLs
  */
 export const createPayPalOrder = async (
   amountUSD: string,
   description: string,
-  serviceType: 'gmb' | 'domain' = 'gmb',
+  serviceType: 'gmb' | 'domain' | 'hosting' = 'gmb',
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-  const returnUrl = serviceType === 'domain'
-    ? `${frontendUrl}/domain-checkout/success`
-    : `${frontendUrl}/services/google-my-business`;
-  const cancelUrl = serviceType === 'domain'
-    ? `${frontendUrl}/domain-checkout`
-    : `${frontendUrl}/services/google-my-business`;
+  const returnUrls: Record<string, string> = {
+    domain: `${frontendUrl}/domain-checkout/success`,
+    hosting: `${frontendUrl}/hosting-checkout/success`,
+    gmb: `${frontendUrl}/services/google-my-business`,
+  };
+  const cancelUrls: Record<string, string> = {
+    domain: `${frontendUrl}/domain-checkout`,
+    hosting: `${frontendUrl}/hosting-checkout`,
+    gmb: `${frontendUrl}/services/google-my-business`,
+  };
+  const returnUrl = returnUrls[serviceType] || returnUrls.gmb;
+  const cancelUrl = cancelUrls[serviceType] || cancelUrls.gmb;
 
   try {
     const response = await axios({
