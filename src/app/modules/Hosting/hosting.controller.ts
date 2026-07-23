@@ -245,10 +245,28 @@ const cpanelSso = catchAsync(async (req, res) => {
   if (!token) {
     throw new AppError(httpStatus.BAD_REQUEST, 'cPanel login token is required.');
   }
-  const loginUrl = await HostingService.resolveCpanelSsoRedirect(token);
+
+  const result = await HostingService.resolveCpanelSsoResult(token);
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  // One-time session URL — browser lands already authenticated
-  res.redirect(302, loginUrl);
+
+  if (result.mode === 'redirect') {
+    res.redirect(302, result.url);
+    return;
+  }
+
+  // Browser form fallback — always 200 HTML (never 502; Cloudflare turns 502 into its error page)
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "base-uri 'none'",
+      "style-src 'unsafe-inline'",
+      "script-src 'unsafe-inline'",
+      'form-action https: http:',
+    ].join('; '),
+  );
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(httpStatus.OK).send(result.html);
 });
 
 const sendCpanelAccess = catchAsync(async (req, res) => {

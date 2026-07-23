@@ -71,7 +71,7 @@ const normalizeCpanelOrigin = (rawUrl: string): string => {
 /**
  * Server-side cPanel login (LogMeIn-style).
  * Returns a one-time browser URL: /cpsess…/login/?session=…
- * Browser form POST alone often fails on modern cPanel (security tokens / cookies).
+ * May fail on VPS if outbound :2083 is blocked — caller should fall back to browser form POST.
  */
 const createCpanelOneTimeLoginUrl = async (
   cpanelUrl: string,
@@ -82,7 +82,7 @@ const createCpanelOneTimeLoginUrl = async (
   const loginUrl = `${origin}/login/`;
 
   // Allow self-signed certs common on hosting panels
-  const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+  const httpsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: false });
 
   let response;
   try {
@@ -102,16 +102,18 @@ const createCpanelOneTimeLoginUrl = async (
         httpsAgent,
         maxRedirects: 0,
         validateStatus: () => true,
-        timeout: 20000,
+        // Keep short so Traefik/Cloudflare don't 502 before we can fall back
+        timeout: 8000,
         responseType: 'text',
         transformResponse: [(data) => data],
       },
     );
-  } catch (err) {
-    console.error('[Hosting] cPanel login request failed:', err);
+  } catch (err: any) {
+    const code = err?.code || err?.cause?.code || '';
+    console.error('[Hosting] cPanel login request failed:', code || err?.message || err);
     throw new AppError(
       httpStatus.BAD_GATEWAY,
-      'Could not reach the cPanel server. Check the cPanel URL and try again.',
+      `Could not reach cPanel from server (${code || 'network error'}). Outbound port 2083 may be blocked on the VPS.`,
     );
   }
 
@@ -122,14 +124,12 @@ const createCpanelOneTimeLoginUrl = async (
 
   let sessionMatch = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/i);
   if (!sessionMatch) {
-    // Some panels put session only on one cookie line
     sessionMatch = cookieHeader.match(/session=([^;]+)/i);
   }
 
   const body = typeof response.data === 'string' ? response.data : String(response.data ?? '');
   const location = String(response.headers.location || '');
 
-  // Direct Location with session already embedded
   if (location) {
     try {
       const abs = new URL(location, origin).href;
@@ -162,6 +162,51 @@ const createCpanelOneTimeLoginUrl = async (
   const session = sessionMatch[1];
   const cpsess = cpsessMatch[1];
   return `${origin}/${cpsess}/login/?session=${session}`;
+};
+
+/** Browser-side auto-login page (works when VPS cannot reach cPanel:2083). */
+const buildCpanelBrowserLoginHtml = (
+  cpanelUrl: string,
+  username: string,
+  password: string,
+  notice?: string,
+): string => {
+  const origin = normalizeCpanelOrigin(cpanelUrl);
+  const actionUrl = `${origin}/login/`;
+  const noticeHtml = notice
+    ? `<p style="font-size:0.85rem;opacity:0.75;max-width:28rem;margin:0.75rem auto 0;">${escapeHtml(notice)}</p>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Opening cPanel…</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .box { text-align: center; padding: 2rem; }
+    .spin { width: 28px; height: 28px; border: 3px solid rgba(255,255,255,0.2); border-top-color: #818cf8; border-radius: 50%; animation: s 0.7s linear infinite; margin: 0 auto 1rem; }
+    @keyframes s { to { transform: rotate(360deg); } }
+    button { margin-top: 1rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 8px; background: #818cf8; color: #0f172a; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="spin" aria-hidden="true"></div>
+    <p>Opening your cPanel…</p>
+    ${noticeHtml}
+    <form id="cpanel-login" method="post" action="${escapeHtml(actionUrl)}">
+      <input type="hidden" name="user" value="${escapeHtml(username)}" />
+      <input type="hidden" name="pass" value="${escapeHtml(password)}" />
+      <button type="submit">Continue to cPanel</button>
+    </form>
+  </div>
+  <script>
+    document.getElementById('cpanel-login').submit();
+  </script>
+</body>
+</html>`;
 };
 
 const escapeHtml = (value: string): string =>
@@ -875,8 +920,12 @@ export const createCpanelLoginToken = async (
   };
 };
 
-/** Resolve SSO token → one-time cPanel session URL (redirect the browser there). */
-export const resolveCpanelSsoRedirect = async (token: string): Promise<string> => {
+export type TCpanelSsoResult =
+  | { mode: 'redirect'; url: string }
+  | { mode: 'html'; html: string };
+
+/** Resolve SSO token → redirect URL, or browser form HTML fallback. */
+export const resolveCpanelSsoResult = async (token: string): Promise<TCpanelSsoResult> => {
   const secret = config.jwt_access_secret;
   if (!secret) throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'JWT secret not configured.');
 
@@ -928,15 +977,28 @@ export const resolveCpanelSsoRedirect = async (token: string): Promise<string> =
     );
   }
 
+  const cpanelUrl = hosting.cpanelUrl as string;
+  const username = hosting.cpanelUsername as string;
+
+  // Prefer server-side session URL when VPS can reach cPanel:2083
   try {
-    return await createCpanelOneTimeLoginUrl(
-      hosting.cpanelUrl as string,
-      hosting.cpanelUsername as string,
-      password,
-    );
+    const url = await createCpanelOneTimeLoginUrl(cpanelUrl, username, password);
+    return { mode: 'redirect', url };
   } catch (err) {
-    usedCpanelSsoJtis.delete(payload.jti);
-    throw err;
+    console.warn(
+      '[Hosting] Server-side cPanel login unavailable, falling back to browser form POST:',
+      err instanceof Error ? err.message : err,
+    );
+    // Do NOT release jti — this token is consumed. Browser form is the fallback path.
+    return {
+      mode: 'html',
+      html: buildCpanelBrowserLoginHtml(
+        cpanelUrl,
+        username,
+        password,
+        'Connecting via your browser…',
+      ),
+    };
   }
 };
 
