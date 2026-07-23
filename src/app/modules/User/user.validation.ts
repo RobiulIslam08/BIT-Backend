@@ -36,7 +36,19 @@ const updateUserValidationSchema = z.object({
       .optional(),
     phone: z.string().trim().optional(),
     address: z.string().trim().optional(),
-    profileImage: z.string().url().optional(),
+    profileImage: z.string().trim().optional(),
+    // Namecheap-style extended profile fields
+    firstName: z.string().trim().optional(),
+    lastName: z.string().trim().optional(),
+    organization: z.string().trim().optional(),
+    jobTitle: z.string().trim().optional(),
+    alternatePhone: z.string().trim().optional(),
+    address1: z.string().trim().optional(),
+    address2: z.string().trim().optional(),
+    city: z.string().trim().optional(),
+    stateProvince: z.string().trim().optional(),
+    postalCode: z.string().trim().optional(),
+    country: z.string().trim().optional(),
   }),
 });
 

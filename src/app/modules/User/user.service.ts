@@ -1,12 +1,66 @@
 import httpStatus from 'http-status';
-import { User } from './user.model';
+import { User, generateUniqueUserCode } from './user.model';
 import { IUser, IUserResponse, UserRole, UserStatus } from './user.interface';
 import AppError from '../../errors/AppError';
 
-// Get all users (Admin only)
-const getAllUsersFromDB = async (): Promise<IUserResponse[]> => {
-  const users = await User.find();
-  return users as unknown as IUserResponse[];
+type TUserListMeta = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+// Get all users (Admin only) — searchable + filterable + paginated.
+const getAllUsersFromDB = async (
+  query: Record<string, unknown> = {},
+): Promise<{ data: IUserResponse[]; meta: TUserListMeta }> => {
+  const page = Math.max(1, parseInt(String(query.page ?? '1'), 10));
+  const limit = Math.min(100, Math.max(1, parseInt(String(query.limit ?? '20'), 10)));
+  const skip = (page - 1) * limit;
+
+  const filter: Record<string, unknown> = {};
+  if (query.role) filter.role = query.role;
+  if (query.status) filter.status = query.status;
+  if (query.search && String(query.search).trim()) {
+    const term = String(query.search).trim();
+    filter.$or = [
+      { name: { $regex: term, $options: 'i' } },
+      { email: { $regex: term, $options: 'i' } },
+      { userCode: { $regex: term, $options: 'i' } },
+    ];
+  }
+
+  const [users, total] = await Promise.all([
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    User.countDocuments(filter),
+  ]);
+
+  return {
+    data: users as unknown as IUserResponse[],
+    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
+};
+
+/**
+ * Backfill unique 6-digit codes for any existing users created before the
+ * userCode field existed. Idempotent — safe to run on every startup.
+ */
+const backfillUserCodes = async (): Promise<number> => {
+  const usersWithoutCode = await User.find({
+    $or: [{ userCode: { $exists: false } }, { userCode: null }],
+  }).select('_id');
+
+  let assigned = 0;
+  for (const user of usersWithoutCode) {
+    const code = await generateUniqueUserCode();
+    await User.updateOne({ _id: user._id }, { $set: { userCode: code } });
+    assigned += 1;
+  }
+
+  if (assigned > 0) {
+    console.log(`[Startup] Backfilled userCode for ${assigned} user(s).`);
+  }
+  return assigned;
 };
 
 // Get single user by ID
@@ -44,7 +98,14 @@ const updateUserProfile = async (
   }
 
   // Prevent updating sensitive fields
-  const restrictedFields = ['email', 'password', 'role', 'isDeleted'];
+  const restrictedFields = [
+    'email',
+    'password',
+    'role',
+    'isDeleted',
+    'status',
+    'accountBalance',
+  ];
   restrictedFields.forEach((field) => {
     if (field in payload) {
       delete payload[field as keyof IUser];
@@ -141,6 +202,7 @@ const deleteUser = async (userId: string): Promise<void> => {
 
 export const UserService = {
   getAllUsersFromDB,
+  backfillUserCodes,
   getSingleUserFromDB,
   getUserProfile,
   updateUserProfile,

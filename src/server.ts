@@ -29,6 +29,7 @@ import { sweepAbandonedCheckouts } from './app/modules/DomainOrder/domainOrder.s
 import { seedDomainPricingIfEmpty } from './app/modules/DomainPricing/domainPricing.service';
 import { seedHostingPlansIfEmpty } from './app/modules/HostingPlan/hostingPlan.service';
 import { sweepAbandonedHostingCheckouts } from './app/modules/HostingOrder/hostingOrder.service';
+import { UserService } from './app/modules/User/user.service';
 
 const ABANDONED_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // every hour
 
@@ -73,6 +74,13 @@ async function main() {
       await seedHostingPlansIfEmpty();
     } catch (err) {
       console.error('[Startup] Hosting plans seed failed (non-critical):', err);
+    }
+
+    // Assign a unique 6-digit customer code to any legacy users missing one.
+    try {
+      await UserService.backfillUserCodes();
+    } catch (err) {
+      console.error('[Startup] User code backfill failed (non-critical):', err);
     }
 
     // Sweep abandoned checkouts now, and every hour thereafter, so cleanup

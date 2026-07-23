@@ -19,11 +19,26 @@ export interface IUser {
   name: string;
   email: string;
   password: string;
+  // Public-facing 6-digit customer identity (random, e.g. "125425").
+  userCode?: string;
   role: UserRole;
   status: UserStatus;
   phone?: string;
   address?: string;
   profileImage?: string;
+  // Namecheap-style extended profile fields
+  firstName?: string;
+  lastName?: string;
+  organization?: string;
+  jobTitle?: string;
+  alternatePhone?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  stateProvince?: string;
+  postalCode?: string;
+  country?: string;
+  accountBalance?: number;
   isDeleted: boolean;
   passwordChangedAt?: Date;
   otp?: string;
@@ -57,11 +72,24 @@ export interface IUserResponse {
   _id: string;
   name: string;
   email: string;
+  userCode?: string;
   role: UserRole;
   status: UserStatus;
   phone?: string;
   address?: string;
   profileImage?: string;
+  firstName?: string;
+  lastName?: string;
+  organization?: string;
+  jobTitle?: string;
+  alternatePhone?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  stateProvince?: string;
+  postalCode?: string;
+  country?: string;
+  accountBalance?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }

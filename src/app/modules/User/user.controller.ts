@@ -7,13 +7,21 @@ import { UserRole, UserStatus } from './user.interface';
 
 // Get all users (Admin only)
 const getAllUsers = catchAsync(async (req: Request, res: Response) => {
-  const result = await UserService.getAllUsersFromDB();
+  const { data, meta } = await UserService.getAllUsersFromDB(
+    req.query as Record<string, unknown>,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: 'Users retrieved successfully',
-    data: result,
+    meta: {
+      page: meta.page,
+      limit: meta.limit,
+      total: meta.total,
+      totalPage: meta.totalPages,
+    },
+    data,
   });
 });
 

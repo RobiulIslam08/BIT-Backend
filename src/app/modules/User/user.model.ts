@@ -27,6 +27,14 @@ const userSchema = new Schema<IUserDocument, IUserModel>(
         'Please provide a valid email address',
       ],
     },
+    // Public 6-digit customer identity (random, e.g. "125425"). Server-generated,
+    // never sequential — so it never reveals how many customers we actually have.
+    userCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     password: {
       type: String,
       required: [true, 'Password is required'],
@@ -53,6 +61,55 @@ const userSchema = new Schema<IUserDocument, IUserModel>(
     },
     profileImage: {
       type: String,
+    },
+    // Namecheap-style extended profile fields
+    firstName: {
+      type: String,
+      trim: true,
+    },
+    lastName: {
+      type: String,
+      trim: true,
+    },
+    organization: {
+      type: String,
+      trim: true,
+    },
+    jobTitle: {
+      type: String,
+      trim: true,
+    },
+    alternatePhone: {
+      type: String,
+      trim: true,
+    },
+    address1: {
+      type: String,
+      trim: true,
+    },
+    address2: {
+      type: String,
+      trim: true,
+    },
+    city: {
+      type: String,
+      trim: true,
+    },
+    stateProvince: {
+      type: String,
+      trim: true,
+    },
+    postalCode: {
+      type: String,
+      trim: true,
+    },
+    country: {
+      type: String,
+      trim: true,
+    },
+    accountBalance: {
+      type: Number,
+      default: 0,
     },
     isDeleted: {
       type: Boolean,
@@ -98,6 +155,16 @@ userSchema.pre('save', async function (next) {
       return next(error as Error);
     }
   }
+
+  // Assign a unique random 6-digit customer code on first save.
+  if (this.isNew && !this.userCode) {
+    try {
+      this.userCode = await generateUniqueUserCode();
+    } catch (error) {
+      return next(error as Error);
+    }
+  }
+
   next();
 });
 
@@ -171,3 +238,18 @@ userSchema.statics.isJWTIssuedBeforePasswordChanged = function (
 
 // Create and export the User model
 export const User = model<IUserDocument, IUserModel>('User', userSchema);
+
+/**
+ * Generate a random, unique 6-digit customer code in the range 100000–999999.
+ * Random (not sequential) so the number never hints at how many customers exist.
+ * Loops until an unused code is found; collisions are astronomically rare.
+ */
+export const generateUniqueUserCode = async (): Promise<string> => {
+  // Cap attempts defensively; in practice the first try almost always succeeds.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const exists = await User.exists({ userCode: code });
+    if (!exists) return code;
+  }
+  throw new Error('Could not generate a unique user code after several attempts.');
+};
