@@ -9,21 +9,168 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
+import https from 'https';
 import mongoose from 'mongoose';
 import httpStatus from 'http-status';
 import jwt from 'jsonwebtoken';
+import axios from 'axios';
 import AppError from '../../errors/AppError';
 import config from '../../config';
 import { Hosting } from './hosting.model';
 import { IHosting } from './hosting.interface';
 import { User } from '../User/user.model';
 import { getHostingProjectsDir } from '../../utils/uploadPaths';
+import { encryptCredential, decryptCredential } from '../../utils/credentialCrypto';
+import { sendEmail } from '../../utils/sendEmail';
 
 const PROJECT_UPLOAD_DIR = () => getHostingProjectsDir();
 
 const ensureUploadDir = () => {
   getHostingProjectsDir();
 };
+
+const normalizeOptional = (value?: string | null): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  return trimmed.length ? trimmed : undefined;
+};
+
+const hasCompleteCpanelCredentials = (doc: {
+  cpanelUrl?: string | null;
+  cpanelUsername?: string | null;
+  cpanelPassword?: string | null;
+}): boolean =>
+  Boolean(
+    doc?.cpanelUrl?.trim() &&
+      doc?.cpanelUsername?.trim() &&
+      doc?.cpanelPassword,
+  );
+
+const normalizeCpanelOrigin = (rawUrl: string): string => {
+  const trimmed = rawUrl.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Invalid cPanel URL. Use the base URL only, e.g. https://server.example.com:2083',
+    );
+  }
+  // Reject session URLs — admin must store the base host, not a temporary cpsess link
+  if (/\/cpsess\d+/i.test(parsed.pathname)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Do not use a cpsess session URL. Save only the base cPanel URL (https://host:2083).',
+    );
+  }
+  return `${parsed.protocol}//${parsed.host}`;
+};
+
+/**
+ * Server-side cPanel login (LogMeIn-style).
+ * Returns a one-time browser URL: /cpsess…/login/?session=…
+ * Browser form POST alone often fails on modern cPanel (security tokens / cookies).
+ */
+const createCpanelOneTimeLoginUrl = async (
+  cpanelUrl: string,
+  username: string,
+  password: string,
+): Promise<string> => {
+  const origin = normalizeCpanelOrigin(cpanelUrl);
+  const loginUrl = `${origin}/login/`;
+
+  // Allow self-signed certs common on hosting panels
+  const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+  let response;
+  try {
+    response = await axios.post(
+      loginUrl,
+      new URLSearchParams({
+        user: username,
+        pass: password,
+        goto_uri: '/',
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Connection: 'close',
+          'User-Agent': 'BIT-Software-cPanel-SSO/1.0',
+        },
+        httpsAgent,
+        maxRedirects: 0,
+        validateStatus: () => true,
+        timeout: 20000,
+        responseType: 'text',
+        transformResponse: [(data) => data],
+      },
+    );
+  } catch (err) {
+    console.error('[Hosting] cPanel login request failed:', err);
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      'Could not reach the cPanel server. Check the cPanel URL and try again.',
+    );
+  }
+
+  const setCookie = response.headers['set-cookie'];
+  const cookieHeader = Array.isArray(setCookie)
+    ? setCookie.join('; ')
+    : String(setCookie || '');
+
+  let sessionMatch = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/i);
+  if (!sessionMatch) {
+    // Some panels put session only on one cookie line
+    sessionMatch = cookieHeader.match(/session=([^;]+)/i);
+  }
+
+  const body = typeof response.data === 'string' ? response.data : String(response.data ?? '');
+  const location = String(response.headers.location || '');
+
+  // Direct Location with session already embedded
+  if (location) {
+    try {
+      const abs = new URL(location, origin).href;
+      if (/cpsess\d+/i.test(abs) && /session=/i.test(abs)) {
+        return abs;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const cpsessMatch =
+    body.match(/<META\s+HTTP-EQUIV=["']refresh["'][^>]*URL=\/(cpsess\d+)\//i) ||
+    body.match(/URL=\/(cpsess\d+)\//i) ||
+    location.match(/\/(cpsess\d+)\//i);
+
+  if (!sessionMatch?.[1] || !cpsessMatch?.[1]) {
+    console.error('[Hosting] cPanel login parse failed', {
+      status: response.status,
+      hasSession: Boolean(sessionMatch),
+      hasCpsess: Boolean(cpsessMatch),
+      location: location.slice(0, 200),
+    });
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      'cPanel login failed. Verify username/password, or use “cPanel Access” email and log in manually.',
+    );
+  }
+
+  const session = sessionMatch[1];
+  const cpsess = cpsessMatch[1];
+  return `${origin}/${cpsess}/login/?session=${session}`;
+};
+
+const escapeHtml = (value: string): string =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 /** Strip admin-only fields before sending to customers. */
 export const toCustomerHosting = (doc: Record<string, any>) => {
@@ -33,6 +180,7 @@ export const toCustomerHosting = (doc: Record<string, any>) => {
     internalProvider,
     internalServerNote,
     assignedBy,
+    cpanelPassword,
     __v,
     ...safe
   } = doc;
@@ -49,7 +197,43 @@ export const toCustomerHosting = (doc: Record<string, any>) => {
     safe.projectFile = null;
   }
 
+  safe.hasCpanelAccess = hasCompleteCpanelCredentials({
+    cpanelUrl: safe.cpanelUrl,
+    cpanelUsername: safe.cpanelUsername,
+    cpanelPassword,
+  });
+
+  // Never expose password to customers
+  delete safe.cpanelPassword;
+
+  if (!safe.hasCpanelAccess) {
+    // Hide partial credential noise when not fully provisioned
+    if (!safe.cpanelUrl) delete safe.cpanelUrl;
+    if (!safe.cpanelUsername) delete safe.cpanelUsername;
+    if (!safe.cpanelDomain) delete safe.cpanelDomain;
+  }
+
   return safe;
+};
+
+/** Admin responses: never return decrypted password (write-only on edit). */
+const toAdminHosting = (doc: Record<string, any>) => {
+  if (!doc) return doc;
+  const out = { ...doc };
+  const storedPassword = out.cpanelPassword;
+  const hasPassword = Boolean(storedPassword);
+
+  out.hasCpanelPassword = hasPassword;
+  out.hasCpanelAccess = hasCompleteCpanelCredentials({
+    cpanelUrl: out.cpanelUrl,
+    cpanelUsername: out.cpanelUsername,
+    cpanelPassword: storedPassword,
+  });
+
+  // Never send password (encrypted or plaintext) to the client
+  delete out.cpanelPassword;
+
+  return out;
 };
 
 const addBillingPeriod = (base: Date, cycle: 'monthly' | 'yearly'): Date => {
@@ -107,10 +291,16 @@ export const createHosting = async (
     notes: payload.notes,
     internalProvider: payload.internalProvider,
     internalServerNote: payload.internalServerNote,
+    cpanelUrl: normalizeOptional((payload as any).cpanelUrl),
+    cpanelUsername: normalizeOptional((payload as any).cpanelUsername),
+    cpanelPassword: normalizeOptional((payload as any).cpanelPassword)
+      ? encryptCredential(String((payload as any).cpanelPassword).trim())
+      : undefined,
+    cpanelDomain: normalizeOptional((payload as any).cpanelDomain),
     assignedBy: new mongoose.Types.ObjectId(adminId),
   });
 
-  return created.toObject() as IHosting;
+  return toAdminHosting(created.toObject()) as IHosting;
 };
 
 export const getAllHostings = async (query: Record<string, unknown>) => {
@@ -144,7 +334,7 @@ export const getAllHostings = async (query: Record<string, unknown>) => {
   ]);
 
   return {
-    hostings,
+    hostings: hostings.map((h) => toAdminHosting(h)),
     meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 };
@@ -155,7 +345,7 @@ export const getHostingByIdAdmin = async (id: string) => {
     .populate('assignedBy', 'name email')
     .lean();
   if (!hosting) throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');
-  return hosting;
+  return toAdminHosting(hosting);
 };
 
 export const updateHosting = async (id: string, payload: Partial<IHosting>): Promise<IHosting> => {
@@ -183,8 +373,26 @@ export const updateHosting = async (id: string, payload: Partial<IHosting>): Pro
   if (payload.internalProvider !== undefined) hosting.internalProvider = payload.internalProvider;
   if (payload.internalServerNote !== undefined) hosting.internalServerNote = payload.internalServerNote;
 
+  // cPanel credentials — empty string clears the field (null in DB)
+  if ((payload as any).cpanelUrl !== undefined) {
+    hosting.cpanelUrl = normalizeOptional((payload as any).cpanelUrl) ?? null;
+  }
+  if ((payload as any).cpanelUsername !== undefined) {
+    hosting.cpanelUsername = normalizeOptional((payload as any).cpanelUsername) ?? null;
+  }
+  if ((payload as any).cpanelDomain !== undefined) {
+    hosting.cpanelDomain = normalizeOptional((payload as any).cpanelDomain) ?? null;
+  }
+  // Empty password on update = keep existing; non-empty = replace (encrypted)
+  if ((payload as any).cpanelPassword !== undefined) {
+    const nextPass = String((payload as any).cpanelPassword ?? '').trim();
+    if (nextPass) {
+      hosting.cpanelPassword = encryptCredential(nextPass);
+    }
+  }
+
   await hosting.save();
-  return hosting.toObject() as IHosting;
+  return toAdminHosting(hosting.toObject()) as IHosting;
 };
 
 export const deleteHosting = async (id: string) => {
@@ -576,4 +784,237 @@ export const resolveProjectDownloadByToken = async (
     absolutePath,
     downloadName: hosting.projectFile.originalName || 'project.zip',
   };
+};
+
+// ============================================
+// cPanel SSO + credential email
+// ============================================
+
+type TCpanelSsoPayload = {
+  hostingId: string;
+  userId: string;
+  purpose: 'hosting-cpanel-sso';
+  jti: string;
+};
+
+/** Short-lived one-use tokens (in-memory). Survives process restarts as expired JWTs. */
+const usedCpanelSsoJtis = new Map<string, number>();
+const cpanelEmailCooldown = new Map<string, number>(); // hostingId → lastSentAt ms
+
+const pruneExpiredJtis = () => {
+  const now = Date.now();
+  for (const [jti, exp] of usedCpanelSsoJtis.entries()) {
+    if (exp < now) usedCpanelSsoJtis.delete(jti);
+  }
+};
+
+const loadOwnedHostingForCpanel = async (
+  userId: string,
+  hostingId: string,
+  isAdmin = false,
+) => {
+  const filter: Record<string, unknown> = { _id: hostingId };
+  if (!isAdmin) filter.userId = new mongoose.Types.ObjectId(userId);
+
+  const hosting = await Hosting.findOne(filter).lean();
+  if (!hosting) throw new AppError(httpStatus.NOT_FOUND, 'Hosting not found.');
+
+  if (hosting.status !== 'active') {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'cPanel access is only available for active hosting plans.',
+    );
+  }
+
+  if (!hasCompleteCpanelCredentials(hosting)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'cPanel credentials are not ready yet. Please contact support.',
+    );
+  }
+
+  return hosting;
+};
+
+/** Create a short-lived SSO path the browser can open in a new tab. */
+export const createCpanelLoginToken = async (
+  userId: string,
+  hostingId: string,
+  isAdmin = false,
+): Promise<{ ssoPath: string; expiresIn: number }> => {
+  await loadOwnedHostingForCpanel(userId, hostingId, isAdmin);
+
+  const secret = config.jwt_access_secret;
+  if (!secret) throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'JWT secret not configured.');
+
+  const expiresIn = 60; // 60 seconds
+  const jti = crypto.randomBytes(16).toString('hex');
+
+  const token = jwt.sign(
+    {
+      hostingId,
+      userId,
+      purpose: 'hosting-cpanel-sso',
+      jti,
+    } satisfies TCpanelSsoPayload,
+    secret,
+    { expiresIn },
+  );
+
+  return {
+    expiresIn,
+    ssoPath: `/api/v1/hostings/cpanel-sso?token=${encodeURIComponent(token)}`,
+  };
+};
+
+/** Resolve SSO token → one-time cPanel session URL (redirect the browser there). */
+export const resolveCpanelSsoRedirect = async (token: string): Promise<string> => {
+  const secret = config.jwt_access_secret;
+  if (!secret) throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'JWT secret not configured.');
+
+  let payload: TCpanelSsoPayload;
+  try {
+    payload = jwt.verify(token, secret) as TCpanelSsoPayload;
+  } catch {
+    throw new AppError(
+      httpStatus.UNAUTHORIZED,
+      'cPanel link expired or invalid. Please try again from My Hosting.',
+    );
+  }
+
+  if (payload.purpose !== 'hosting-cpanel-sso' || !payload.hostingId || !payload.jti) {
+    throw new AppError(httpStatus.UNAUTHORIZED, 'Invalid cPanel login token.');
+  }
+
+  pruneExpiredJtis();
+  if (usedCpanelSsoJtis.has(payload.jti)) {
+    throw new AppError(
+      httpStatus.UNAUTHORIZED,
+      'This cPanel link was already used. Please open cPanel again from My Hosting.',
+    );
+  }
+  usedCpanelSsoJtis.set(payload.jti, Date.now() + 2 * 60 * 1000);
+
+  const hosting = await Hosting.findById(payload.hostingId).lean();
+  if (!hosting || !hasCompleteCpanelCredentials(hosting)) {
+    usedCpanelSsoJtis.delete(payload.jti);
+    throw new AppError(httpStatus.NOT_FOUND, 'cPanel credentials are not available.');
+  }
+
+  if (hosting.status !== 'active') {
+    usedCpanelSsoJtis.delete(payload.jti);
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'cPanel access is only available for active hosting plans.',
+    );
+  }
+
+  let password: string;
+  try {
+    password = decryptCredential(hosting.cpanelPassword as string);
+  } catch {
+    usedCpanelSsoJtis.delete(payload.jti);
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Unable to unlock cPanel credentials. Please contact support.',
+    );
+  }
+
+  try {
+    return await createCpanelOneTimeLoginUrl(
+      hosting.cpanelUrl as string,
+      hosting.cpanelUsername as string,
+      password,
+    );
+  } catch (err) {
+    usedCpanelSsoJtis.delete(payload.jti);
+    throw err;
+  }
+};
+
+/** Email cPanel credentials to the hosting owner. Rate-limited per hosting. */
+export const sendCpanelAccessEmail = async (
+  userId: string,
+  hostingId: string,
+  isAdmin = false,
+): Promise<{ emailedTo: string }> => {
+  const hosting = await loadOwnedHostingForCpanel(userId, hostingId, isAdmin);
+
+  const cooldownMs = 2 * 60 * 1000;
+  const lastSent = cpanelEmailCooldown.get(String(hosting._id)) || 0;
+  const now = Date.now();
+  if (now - lastSent < cooldownMs) {
+    const waitSec = Math.ceil((cooldownMs - (now - lastSent)) / 1000);
+    throw new AppError(
+      httpStatus.TOO_MANY_REQUESTS,
+      `Please wait ${waitSec} seconds before requesting credentials again.`,
+    );
+  }
+
+  const owner = await User.findById(hosting.userId).select('name email').lean();
+  if (!owner?.email) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'No email address found on your account.');
+  }
+
+  let password: string;
+  try {
+    password = decryptCredential(hosting.cpanelPassword as string);
+  } catch {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Unable to unlock cPanel credentials. Please contact support.',
+    );
+  }
+
+  const cpanelUrl = (hosting.cpanelUrl as string).trim();
+  const username = hosting.cpanelUsername as string;
+  const domain = (hosting.cpanelDomain || hosting.websiteLabel || '—') as string;
+  const customerName = owner.name || 'Customer';
+
+  try {
+    await sendEmail(
+      owner.email,
+      `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1e293b;">
+          <h2 style="color: #4F46E5; margin-bottom: 8px;">Your cPanel Access Details</h2>
+          <p>Dear ${escapeHtml(customerName)},</p>
+          <p>Here are the login details for your hosting plan <strong>${escapeHtml(hosting.planName)}</strong>.</p>
+          <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+            <tr>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-weight: bold; width: 40%;">cPanel URL</td>
+              <td style="padding: 10px; border: 1px solid #e5e7eb;"><a href="${escapeHtml(cpanelUrl)}">${escapeHtml(cpanelUrl)}</a></td>
+            </tr>
+            <tr>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;">Username</td>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-family: monospace;">${escapeHtml(username)}</td>
+            </tr>
+            <tr>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;">Password</td>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-family: monospace;">${escapeHtml(password)}</td>
+            </tr>
+            <tr>
+              <td style="padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;">Domain</td>
+              <td style="padding: 10px; border: 1px solid #e5e7eb;">${escapeHtml(domain)}</td>
+            </tr>
+          </table>
+          <p style="font-size: 14px; color: #64748b;">
+            Keep these details private. You can also open cPanel directly from
+            <a href="${process.env.FRONTEND_URL || ''}/my-account?tab=hosting">My Account → Hosting</a>.
+          </p>
+          <p>Thank you for choosing BIT Software &amp; IT Solution!</p>
+        </div>
+      `,
+      `🔐 cPanel Access — ${hosting.planName} — BIT Software`,
+    );
+  } catch (err) {
+    console.error('[Hosting] cPanel access email failed:', err);
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Failed to send cPanel access email. Please try again shortly.',
+    );
+  }
+
+  cpanelEmailCooldown.set(String(hosting._id), now);
+
+  return { emailedTo: owner.email };
 };

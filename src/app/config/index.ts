@@ -29,4 +29,7 @@ NODE_ENV:process.env.NODE_ENV,
   namecheap_api_user: process.env.NAMECHEAP_API_USER,
   namecheap_client_ip: process.env.NAMECHEAP_CLIENT_IP,
   namecheap_env: process.env.NAMECHEAP_ENV || 'production',
+  // ─── cPanel credential encryption (AES-256-GCM) ───
+  // Prefer a dedicated secret; falls back to JWT_ACCESS_SECRET in credentialCrypto.
+  cpanel_credentials_secret: process.env.CPANEL_CREDENTIALS_SECRET,
 };

@@ -60,6 +60,12 @@ export interface IHosting {
   internalProvider?: string;
   internalServerNote?: string;
 
+  // ─── cPanel credentials (password encrypted at rest) ───
+  cpanelUrl?: string | null;
+  cpanelUsername?: string | null;
+  cpanelPassword?: string | null; // AES-256-GCM ciphertext; never send plaintext to customers
+  cpanelDomain?: string | null;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

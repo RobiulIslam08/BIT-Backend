@@ -215,6 +215,49 @@ const downloadByToken = catchAsync(async (req, res) => {
   res.download(absolutePath, downloadName);
 });
 
+const createCpanelLogin = catchAsync(async (req, res) => {
+  const userId = req.user.userId as string;
+  const isAdmin = req.user.role === 'admin';
+  const result = await HostingService.createCpanelLoginToken(
+    userId,
+    req.params.id as string,
+    isAdmin,
+  );
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'cPanel login link created.',
+    data: result,
+  });
+});
+
+const cpanelSso = catchAsync(async (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'cPanel login token is required.');
+  }
+  const loginUrl = await HostingService.resolveCpanelSsoRedirect(token);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  // One-time session URL — browser lands already authenticated
+  res.redirect(302, loginUrl);
+});
+
+const sendCpanelAccess = catchAsync(async (req, res) => {
+  const userId = req.user.userId as string;
+  const isAdmin = req.user.role === 'admin';
+  const result = await HostingService.sendCpanelAccessEmail(
+    userId,
+    req.params.id as string,
+    isAdmin,
+  );
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `cPanel access details sent to ${result.emailedTo}.`,
+    data: result,
+  });
+});
+
 export const HostingControllers = {
   createHosting,
   getAllHostings,
@@ -232,4 +275,7 @@ export const HostingControllers = {
   downloadMyProject,
   createDownloadToken,
   downloadByToken,
+  createCpanelLogin,
+  cpanelSso,
+  sendCpanelAccess,
 };

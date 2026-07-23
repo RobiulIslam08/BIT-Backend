@@ -10,6 +10,17 @@ const statusEnum = z.enum(['active', 'pending', 'expired', 'suspended', 'cancell
 const planTypeEnum = z.enum(['shared', 'vps']);
 const billingEnum = z.enum(['monthly', 'yearly']);
 
+const optionalCpanelUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .refine((v) => !v || /^https?:\/\/.+/i.test(v), {
+    message: 'cPanel URL must start with http:// or https://',
+  });
+
+const optionalCpanelString = (max: number) => z.string().trim().max(max).optional();
+
 const createHostingValidationSchema = z.object({
   body: z.object({
     userId: objectId,
@@ -28,6 +39,10 @@ const createHostingValidationSchema = z.object({
     notes: z.string().trim().max(2000).optional(),
     internalProvider: z.string().trim().max(100).optional(),
     internalServerNote: z.string().trim().max(2000).optional(),
+    cpanelUrl: optionalCpanelUrl,
+    cpanelUsername: optionalCpanelString(128),
+    cpanelPassword: z.string().max(256).optional(),
+    cpanelDomain: optionalCpanelString(253),
   }),
 });
 
@@ -48,6 +63,10 @@ const updateHostingValidationSchema = z.object({
     notes: z.string().trim().max(2000).optional(),
     internalProvider: z.string().trim().max(100).optional(),
     internalServerNote: z.string().trim().max(2000).optional(),
+    cpanelUrl: optionalCpanelUrl,
+    cpanelUsername: optionalCpanelString(128),
+    cpanelPassword: z.string().max(256).optional(),
+    cpanelDomain: optionalCpanelString(253),
   }),
 });
 

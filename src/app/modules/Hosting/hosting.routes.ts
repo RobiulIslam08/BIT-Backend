@@ -105,8 +105,20 @@ const downloadLimit = rateLimit({
   skip: () => process.env.NODE_ENV === 'test',
 });
 
+const cpanelLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many cPanel requests. Please wait a few minutes.' },
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
 // ─── PUBLIC: token-based streaming download (for large ZIPs) ───
 router.get('/download-file', downloadLimit, HostingControllers.downloadByToken);
+
+// ─── PUBLIC: cPanel SSO auto-login (short-lived token) ───
+router.get('/cpanel-sso', cpanelLimit, HostingControllers.cpanelSso);
 
 // ─── ADMIN: user picker ───
 router.get('/admin/users', auth('admin'), HostingControllers.searchUsers);
@@ -125,6 +137,18 @@ router.get(
   auth('user', 'admin'),
   downloadLimit,
   HostingControllers.downloadMyProject,
+);
+router.post(
+  '/my/:id/cpanel-login',
+  auth('user', 'admin'),
+  cpanelLimit,
+  HostingControllers.createCpanelLogin,
+);
+router.post(
+  '/my/:id/send-cpanel-access',
+  auth('user', 'admin'),
+  cpanelLimit,
+  HostingControllers.sendCpanelAccess,
 );
 
 // ─── ADMIN: CRUD + project upload ───

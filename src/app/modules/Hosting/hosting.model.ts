@@ -71,6 +71,12 @@ const HostingSchema = new Schema<IHosting>(
 
     internalProvider: { type: String, trim: true, maxlength: 100 },
     internalServerNote: { type: String, trim: true, maxlength: 2000 },
+
+    // cPanel credentials — password stored encrypted (AES-256-GCM)
+    cpanelUrl: { type: String, trim: true, maxlength: 500 },
+    cpanelUsername: { type: String, trim: true, maxlength: 128 },
+    cpanelPassword: { type: String, maxlength: 1000 },
+    cpanelDomain: { type: String, trim: true, maxlength: 253 },
   },
   { timestamps: true },
 );
