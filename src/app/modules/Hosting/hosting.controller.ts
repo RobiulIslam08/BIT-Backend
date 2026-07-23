@@ -218,10 +218,19 @@ const downloadByToken = catchAsync(async (req, res) => {
 const createCpanelLogin = catchAsync(async (req, res) => {
   const userId = req.user.userId as string;
   const isAdmin = req.user.role === 'admin';
+
+  // Prefer proxy headers so production SSO hits the real public API host
+  const forwardedProto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  const forwardedHost = String(req.get('x-forwarded-host') || '').split(',')[0].trim();
+  const proto = forwardedProto || req.protocol || 'https';
+  const host = forwardedHost || req.get('host') || '';
+  const publicOrigin = host ? `${proto}://${host}` : undefined;
+
   const result = await HostingService.createCpanelLoginToken(
     userId,
     req.params.id as string,
     isAdmin,
+    publicOrigin,
   );
   sendResponse(res, {
     statusCode: httpStatus.OK,

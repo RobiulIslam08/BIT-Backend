@@ -841,7 +841,8 @@ export const createCpanelLoginToken = async (
   userId: string,
   hostingId: string,
   isAdmin = false,
-): Promise<{ ssoPath: string; expiresIn: number }> => {
+  publicOrigin?: string,
+): Promise<{ ssoPath: string; ssoUrl: string; expiresIn: number }> => {
   await loadOwnedHostingForCpanel(userId, hostingId, isAdmin);
 
   const secret = config.jwt_access_secret;
@@ -861,9 +862,16 @@ export const createCpanelLoginToken = async (
     { expiresIn },
   );
 
+  const ssoPath = `/api/v1/hostings/cpanel-sso?token=${encodeURIComponent(token)}`;
+  const origin = (publicOrigin || process.env.BACKEND_PUBLIC_URL || process.env.API_PUBLIC_URL || '')
+    .trim()
+    .replace(/\/$/, '');
+  const ssoUrl = origin ? `${origin}${ssoPath}` : ssoPath;
+
   return {
     expiresIn,
-    ssoPath: `/api/v1/hostings/cpanel-sso?token=${encodeURIComponent(token)}`,
+    ssoPath,
+    ssoUrl,
   };
 };
 
