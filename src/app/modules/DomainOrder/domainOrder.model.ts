@@ -48,7 +48,7 @@ const DomainOrderSchema = new Schema<IDomainOrder>(
     // ─── Payment ───
     paymentMethod: {
       type: String,
-      enum: ['paypal'],
+      enum: ['paypal', 'wallet'],
       required: true,
       default: 'paypal',
     },
@@ -63,6 +63,11 @@ const DomainOrderSchema = new Schema<IDomainOrder>(
     paypalCaptureId: { type: String, unique: true, sparse: true, trim: true },
     paypalTransactionId: { type: String, unique: true, sparse: true, trim: true },
     paypalRefundId: { type: String, unique: true, sparse: true, trim: true },
+
+    // ─── Wallet payment ───
+    walletTransactionId: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
+    walletPromoUsed: { type: Number, min: 0 },
+    walletAccountUsed: { type: Number, min: 0 },
 
     // ─── Order Status ───
     orderStatus: {
@@ -98,9 +103,17 @@ const DomainOrderSchema = new Schema<IDomainOrder>(
   },
 );
 
-// ─── Compound Indexes ───
-// Prevent same user buying same domain twice (active)
-DomainOrderSchema.index({ domainName: 1, orderStatus: 1 });
+// Prevent concurrent wallet/PayPal registrations for the same domain name.
+// Only one processing or active order may exist per domainName at a time;
+// failed/cancelled orders do not block a retry.
+DomainOrderSchema.index(
+  { domainName: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { orderStatus: { $in: ['processing', 'active'] } },
+    name: 'uniq_domain_inflight_or_active',
+  },
+);
 // Admin filters
 DomainOrderSchema.index({ orderStatus: 1, paymentStatus: 1, createdAt: -1 });
 // User's domain list

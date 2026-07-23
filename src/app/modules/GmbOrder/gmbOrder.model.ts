@@ -8,6 +8,8 @@ import { IGmbOrder } from './gmbOrder.interface';
 const GmbOrderSchema = new Schema<IGmbOrder>(
   {
     orderId: { type: String, unique: true, sparse: true, trim: true },
+    // Owning user (set when paid from a logged-in customer's wallet)
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     // ─── Business Info ───
     businessName: { type: String, required: true, trim: true, maxlength: 200 },
     category: { type: String, required: true, trim: true, maxlength: 200 },
@@ -56,7 +58,7 @@ const GmbOrderSchema = new Schema<IGmbOrder>(
     // ─── Payment ───
     paymentMethod: {
       type: String,
-      enum: ['paypal', 'manual'],
+      enum: ['paypal', 'manual', 'wallet'],
       required: true,
     },
     paymentStatus: {
@@ -72,6 +74,11 @@ const GmbOrderSchema = new Schema<IGmbOrder>(
     paypalTransactionId: { type: String, unique: true, sparse: true, trim: true },
     payerName: { type: String, trim: true, maxlength: 200 },
     payerEmail: { type: String, trim: true, maxlength: 254 },
+
+    // ─── Wallet Payment ───
+    walletTransactionId: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
+    walletPromoUsed: { type: Number, min: 0 },
+    walletAccountUsed: { type: Number, min: 0 },
 
     // ─── Manual Payment ───
     transactionDetails: {

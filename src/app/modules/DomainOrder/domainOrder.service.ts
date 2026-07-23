@@ -25,6 +25,7 @@ import {
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
 import { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
+import { WalletService } from '../Wallet/wallet.service';
 
 // Re-export for any legacy imports that expected it from this module.
 export { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
@@ -564,6 +565,237 @@ export const completeDomainPurchase = async (payload: {
   } finally {
     session.endSession();
   }
+};
+
+/**
+ * Pay for a domain using the customer's wallet (promotional credit first, then
+ * account balance). Single-step — no PayPal. Debits wallet + creates the order
+ * atomically, then registers on Namecheap, refunding the wallet if that fails.
+ */
+export const payForDomainWithWallet = async (payload: {
+  domainName: string;
+  displayCurrency: TSupportedCurrency;
+  customerName: string;
+  customerEmail: string;
+  customerPhone?: string;
+  userId: string;
+}): Promise<IDomainOrder> => {
+  const { domainName, displayCurrency, customerName, customerEmail, customerPhone, userId } = payload;
+
+  const dotIndex = domainName.indexOf('.');
+  if (dotIndex < 1) throw new AppError(httpStatus.BAD_REQUEST, 'Invalid domain name.');
+  const sld = domainName.substring(0, dotIndex).toLowerCase();
+  const tld = domainName.substring(dotIndex + 1).toLowerCase();
+
+  const existingInFlight = await DomainOrder.findOne({
+    domainName: domainName.toLowerCase(),
+    orderStatus: { $in: ['processing', 'active'] },
+  });
+  if (existingInFlight) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      existingInFlight.orderStatus === 'active'
+        ? `Domain "${domainName}" is already registered.`
+        : `Domain "${domainName}" is already being registered. Please wait a moment.`,
+    );
+  }
+  const existingAsset = await Domain.findOne({ domainName: domainName.toLowerCase() }).lean();
+  if (existingAsset) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      `Domain "${domainName}" is already registered in our system.`,
+    );
+  }
+
+  const sellPriceUSD = await getDomainPriceUSD(tld);
+  const { displayAmount, rate } = await convertFromUSD(sellPriceUSD, displayCurrency);
+  const orderId = await generateOrderId();
+
+  // ─── Debit wallet + create paid order atomically ───
+  const session = await mongoose.startSession();
+  let spend: { promoUsed: number; accountUsed: number; transactionId: string } | null = null;
+  let createdOrderId: mongoose.Types.ObjectId | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      // Re-check inside the transaction to close the TOCTOU window.
+      const conflict = await DomainOrder.findOne({
+        domainName: domainName.toLowerCase(),
+        orderStatus: { $in: ['processing', 'active'] },
+      }).session(session);
+      if (conflict) {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          conflict.orderStatus === 'active'
+            ? `Domain "${domainName}" is already registered.`
+            : `Domain "${domainName}" is already being registered. Please wait a moment.`,
+        );
+      }
+
+      spend = await WalletService.spendFromWallet({
+        userId,
+        amountUSD: sellPriceUSD,
+        reference: { kind: 'domain_order', id: orderId },
+        note: `Domain registration: ${domainName}`,
+        session,
+      });
+
+      try {
+        const [order] = await DomainOrder.create(
+          [
+            {
+              orderId,
+              userId: new mongoose.Types.ObjectId(userId),
+              domainName: domainName.toLowerCase(),
+              sld,
+              tld,
+              registrationYears: 1,
+              whoisPrivacy: true,
+              sellPriceUSD,
+              displayCurrency,
+              displayAmount,
+              exchangeRateUsed: rate,
+              paymentMethod: 'wallet',
+              paymentStatus: 'paid',
+              orderStatus: 'processing',
+              walletTransactionId: new mongoose.Types.ObjectId(spend.transactionId),
+              walletPromoUsed: spend.promoUsed,
+              walletAccountUsed: spend.accountUsed,
+              customerName,
+              customerEmail,
+              customerPhone,
+            },
+          ],
+          { session },
+        );
+        createdOrderId = order._id;
+      } catch (createErr: any) {
+        if (createErr?.code === 11000) {
+          throw new AppError(
+            httpStatus.CONFLICT,
+            `Domain "${domainName}" is already being registered. Please wait a moment.`,
+          );
+        }
+        throw createErr;
+      }
+    });
+  } finally {
+    session.endSession();
+  }
+
+  if (!spend || !createdOrderId) {
+    throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to process wallet payment.');
+  }
+  const walletSpend = spend as { promoUsed: number; accountUsed: number; transactionId: string };
+
+  // ─── Register on Namecheap (outside the transaction) ───
+  let ncResult: { namecheapOrderId: string; registeredAt: Date; expiresAt: Date } | null = null;
+  let registrationError: string | null = null;
+  try {
+    ncResult = await registerDomainOnNamecheap(domainName.toLowerCase(), 1);
+  } catch (err: any) {
+    registrationError = err.message || 'Domain registration failed';
+    console.error('[DomainWallet] Namecheap registration failed:', registrationError);
+  }
+
+  if (ncResult) {
+    await DomainOrder.updateOne(
+      { _id: createdOrderId },
+      {
+        $set: {
+          orderStatus: 'active',
+          namecheapOrderId: ncResult.namecheapOrderId,
+          registeredAt: ncResult.registeredAt,
+          expiresAt: ncResult.expiresAt,
+        },
+      },
+    );
+
+    try {
+      await Domain.updateOne(
+        { domainName: domainName.toLowerCase() },
+        {
+          $setOnInsert: {
+            userId: new mongoose.Types.ObjectId(userId),
+            domainName: domainName.toLowerCase(),
+            sld,
+            tld,
+            source: 'purchase',
+            registrar: 'BIT',
+            managedByNamecheap: true,
+            status: 'active',
+            registeredAt: ncResult.registeredAt,
+            expiresAt: ncResult.expiresAt,
+            registrationYears: 1,
+            renewPriceSource: 'provider',
+            whoisPrivacy: true,
+            autoRenew: false,
+            autoRenewStatus: 'inactive',
+            nameservers: [],
+            domainOrderId: createdOrderId,
+          },
+        },
+        { upsert: true },
+      );
+    } catch (assetErr) {
+      console.error('[DomainWallet] Domain asset upsert failed (non-critical):', assetErr);
+    }
+
+    try {
+      await sendEmail(
+        customerEmail,
+        `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #4F46E5;">Domain Registration Successful!</h2>
+            <p>Dear ${customerName},</p>
+            <p>Your domain <strong>${domainName}</strong> has been successfully registered (paid from your wallet).</p>
+            <p><strong>Order ID:</strong> ${orderId}</p>
+            <p>You can manage your domain from <a href="${process.env.FRONTEND_URL}/my-account">My Account</a>.</p>
+          </div>
+        `,
+        `✅ Domain "${domainName}" Successfully Registered — BIT Software`,
+      );
+    } catch (emailErr) {
+      console.error('[DomainWallet] Success email failed:', emailErr);
+    }
+  } else {
+    // ─── FAILURE — refund the wallet, mark order failed ───
+    let refunded = false;
+    try {
+      await WalletService.refundToWallet({
+        userId,
+        accountAmount: walletSpend.accountUsed,
+        promoAmount: walletSpend.promoUsed,
+        reference: { kind: 'domain_order', id: orderId },
+        note: `Refund — domain registration failed: ${domainName}`,
+      });
+      refunded = true;
+    } catch (refundErr) {
+      console.error('[DomainWallet] Wallet refund FAILED — MANUAL ACTION REQUIRED:', refundErr);
+    }
+
+    await DomainOrder.updateOne(
+      { _id: createdOrderId },
+      {
+        $set: {
+          orderStatus: 'failed',
+          paymentStatus: refunded ? 'refunded' : 'paid',
+          failureReason: registrationError,
+          ...(refunded ? { refundedAt: new Date() } : {}),
+        },
+      },
+    );
+
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      refunded
+        ? `Domain registration failed. Your wallet has been refunded $${sellPriceUSD.toFixed(2)}. Order ID: ${orderId}`
+        : `Domain registration failed. Order ID: ${orderId}. If your wallet was charged, our team will refund it shortly.`,
+    );
+  }
+
+  const finalOrder = await DomainOrder.findById(createdOrderId).lean();
+  return finalOrder as IDomainOrder;
 };
 
 /**

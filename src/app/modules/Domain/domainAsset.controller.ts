@@ -156,6 +156,26 @@ const completeRenew = catchAsync(async (req, res) => {
   });
 });
 
+const renewWithWallet = catchAsync(async (req, res) => {
+  const userId = req.user.userId as string;
+  const { displayCurrency } = req.body;
+  const currency: TSupportedCurrency = VALID_CURRENCIES.includes(displayCurrency)
+    ? displayCurrency
+    : 'SAR';
+
+  const result = await DomainService.renewWithWallet({
+    userId,
+    domainId: req.params.id as string,
+    displayCurrency: currency,
+  });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Domain renewed successfully.',
+    data: result,
+  });
+});
+
 // ============================================
 // SYSTEM — Auto-renew engine
 // ============================================
@@ -208,6 +228,7 @@ export const DomainControllers = {
   toggleAutoRenew,
   createRenewOrder,
   completeRenew,
+  renewWithWallet,
   // cron
   runRenewalEngineCron,
 };

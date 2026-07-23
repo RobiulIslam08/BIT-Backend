@@ -2,8 +2,10 @@
 // BIT SOFTWARE — GMB Order Interface
 // ============================================
 
+import { Types } from 'mongoose';
+
 export type TServiceType = 'new' | 'recovery' | 'regular';
-export type TPaymentMethod = 'paypal' | 'manual';
+export type TPaymentMethod = 'paypal' | 'manual' | 'wallet';
 export type TPaymentStatus = 'pending_verification' | 'paid' | 'failed' | 'due';
 export type TOrderStatus = 'pending_review' | 'in_progress' | 'completed' | 'cancelled';
 
@@ -16,6 +18,8 @@ export interface ITransactionDetails {
 
 export interface IGmbOrder {
   orderId?: string;
+  // Optional owning user (set when paid from a logged-in customer's wallet)
+  userId?: Types.ObjectId;
   // Business info
   businessName: string;
   category: string;
@@ -60,6 +64,11 @@ export interface IGmbOrder {
   paypalTransactionId?: string;
   payerName?: string;
   payerEmail?: string;
+
+  // Wallet payment (when paymentMethod === 'wallet')
+  walletTransactionId?: Types.ObjectId;
+  walletPromoUsed?: number;
+  walletAccountUsed?: number;
 
   // Manual payment
   transactionDetails?: ITransactionDetails;

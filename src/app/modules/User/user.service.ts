@@ -23,11 +23,16 @@ const getAllUsersFromDB = async (
   if (query.status) filter.status = query.status;
   if (query.search && String(query.search).trim()) {
     const term = String(query.search).trim();
-    filter.$or = [
+    const or: Record<string, unknown>[] = [
       { name: { $regex: term, $options: 'i' } },
       { email: { $regex: term, $options: 'i' } },
       { userCode: { $regex: term, $options: 'i' } },
     ];
+    // Allow searching by MongoDB ObjectId when the term looks like one.
+    if (/^[a-fA-F0-9]{24}$/.test(term)) {
+      or.push({ _id: term });
+    }
+    filter.$or = or;
   }
 
   const [users, total] = await Promise.all([
@@ -105,6 +110,7 @@ const updateUserProfile = async (
     'isDeleted',
     'status',
     'accountBalance',
+    'promotionalCredit',
   ];
   restrictedFields.forEach((field) => {
     if (field in payload) {

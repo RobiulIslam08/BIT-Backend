@@ -85,6 +85,9 @@ router.post('/', orderRateLimit, handleUpload, GmbOrderControllers.submitOrder);
 // Must be defined BEFORE the /:id route to avoid conflicts
 router.post('/create-paypal-order', GmbOrderControllers.createPayPalOrder);
 
+// Pay for a GMB order using wallet balance (authenticated customers only)
+router.post('/pay-with-wallet', auth('user', 'admin'), orderRateLimit, GmbOrderControllers.payWithWallet);
+
 // Validate a coupon code (rate limited, brute-force protected)
 router.post('/validate-coupon', couponRateLimit, GmbOrderControllers.validateCoupon);
 

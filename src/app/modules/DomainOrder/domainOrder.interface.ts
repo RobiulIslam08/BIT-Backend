@@ -33,12 +33,17 @@ export interface IDomainOrder {
   exchangeRateUsed: number;  // rate at time of purchase (audit trail)
 
   // ─── Payment ───
-  paymentMethod: 'paypal';   // bKash added later
+  paymentMethod: 'paypal' | 'wallet';
   paymentStatus: TDomainPaymentStatus;
   paypalOrderId?: string;    // PayPal order ID (unique)
   paypalCaptureId?: string;  // PayPal capture ID (for refund)
   paypalTransactionId?: string;
   paypalRefundId?: string;   // if refunded
+
+  // ─── Wallet payment (when paymentMethod === 'wallet') ───
+  walletTransactionId?: Types.ObjectId;
+  walletPromoUsed?: number;    // promotional credit spent
+  walletAccountUsed?: number;  // account balance spent
 
   // ─── Order Status ───
   orderStatus: TDomainOrderStatus;

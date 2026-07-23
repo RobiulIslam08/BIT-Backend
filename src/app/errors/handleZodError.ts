@@ -9,10 +9,14 @@ const handleZodError = (err: ZodError): TGenericErrorResponse => {
     };
   });
   const statusCode = 400;
+  const detail = errorSources
+    .map((e) => (e.path ? `${e.path}: ${e.message}` : e.message))
+    .filter(Boolean)
+    .join(' · ');
 
   return {
     statusCode,
-    message: 'Validation Error',
+    message: detail || 'Validation Error',
     errorSources,
   };
 };

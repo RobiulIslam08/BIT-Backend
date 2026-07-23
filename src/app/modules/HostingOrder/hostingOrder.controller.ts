@@ -27,8 +27,10 @@ const createPayPalOrder = catchAsync(async (req, res) => {
   if (!customerName) throw new AppError(httpStatus.BAD_REQUEST, 'customerName is required.');
   if (!customerEmail) throw new AppError(httpStatus.BAD_REQUEST, 'customerEmail is required.');
 
-  const cycle: THostingBillingCycle =
-    billingCycle === 'monthly' ? 'monthly' : 'yearly';
+  if (billingCycle !== 'monthly' && billingCycle !== 'yearly') {
+    throw new AppError(httpStatus.BAD_REQUEST, 'billingCycle must be "monthly" or "yearly".');
+  }
+  const cycle: THostingBillingCycle = billingCycle;
 
   const currency: TSupportedCurrency = VALID_CURRENCIES.includes(displayCurrency)
     ? (displayCurrency as TSupportedCurrency)
@@ -68,6 +70,49 @@ const completePurchase = catchAsync(async (req, res) => {
       (result as any).orderStatus === 'active'
         ? `Hosting plan "${(result as any).planName}" activated successfully!`
         : 'Purchase processed.',
+    data: result,
+  });
+});
+
+const payWithWallet = catchAsync(async (req, res) => {
+  const {
+    planSlug,
+    billingCycle,
+    displayCurrency,
+    customerName,
+    customerEmail,
+    customerPhone,
+    websiteLabel,
+  } = req.body;
+  const userId = req.user.userId as string;
+
+  if (!planSlug) throw new AppError(httpStatus.BAD_REQUEST, 'planSlug is required.');
+  if (!customerName) throw new AppError(httpStatus.BAD_REQUEST, 'customerName is required.');
+  if (!customerEmail) throw new AppError(httpStatus.BAD_REQUEST, 'customerEmail is required.');
+
+  if (billingCycle !== 'monthly' && billingCycle !== 'yearly') {
+    throw new AppError(httpStatus.BAD_REQUEST, 'billingCycle must be "monthly" or "yearly".');
+  }
+  const cycle: THostingBillingCycle = billingCycle;
+  const currency: TSupportedCurrency = VALID_CURRENCIES.includes(displayCurrency)
+    ? (displayCurrency as TSupportedCurrency)
+    : 'SAR';
+
+  const result = await HostingOrderService.payForHostingWithWallet({
+    planSlug,
+    billingCycle: cycle,
+    displayCurrency: currency,
+    customerName,
+    customerEmail,
+    customerPhone,
+    websiteLabel,
+    userId,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: `Hosting plan "${(result as any).planName}" activated successfully!`,
     data: result,
   });
 });
@@ -137,6 +182,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
 export const HostingOrderControllers = {
   createPayPalOrder,
   completePurchase,
+  payWithWallet,
   getMyOrders,
   getExchangeRates,
   getOrderById,

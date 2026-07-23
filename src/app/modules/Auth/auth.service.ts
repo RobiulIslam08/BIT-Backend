@@ -60,6 +60,8 @@ const registerUser = async (payload: IRegister): Promise<IAuthResponse> => {
       email: newUser.email,
       role: newUser.role,
       profileImage: newUser.profileImage,
+      accountBalance: newUser.accountBalance || 0,
+      promotionalCredit: newUser.promotionalCredit || 0,
     },
   };
 };
@@ -118,6 +120,8 @@ const loginUser = async (payload: ILogin): Promise<IAuthResponse> => {
       email: user.email,
       role: user.role,
       profileImage: user.profileImage,
+      accountBalance: user.accountBalance || 0,
+      promotionalCredit: user.promotionalCredit || 0,
     },
   };
 };
@@ -409,6 +413,8 @@ const googleVerify = async (idToken: string): Promise<IAuthResponse> => {
       email: user.email,
       role: user.role,
       profileImage: user.profileImage,
+      accountBalance: user.accountBalance || 0,
+      promotionalCredit: user.promotionalCredit || 0,
     },
   };
 };

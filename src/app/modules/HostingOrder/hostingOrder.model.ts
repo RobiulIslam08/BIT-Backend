@@ -32,7 +32,7 @@ const HostingOrderSchema = new Schema<IHostingOrder>(
     displayAmount: { type: Number, required: true, min: 0 },
     exchangeRateUsed: { type: Number, required: true, min: 0 },
 
-    paymentMethod: { type: String, enum: ['paypal'], required: true, default: 'paypal' },
+    paymentMethod: { type: String, enum: ['paypal', 'wallet'], required: true, default: 'paypal' },
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'failed', 'refunded'],
@@ -43,6 +43,11 @@ const HostingOrderSchema = new Schema<IHostingOrder>(
     paypalCaptureId: { type: String, unique: true, sparse: true, trim: true },
     paypalTransactionId: { type: String, unique: true, sparse: true, trim: true },
     paypalRefundId: { type: String, unique: true, sparse: true, trim: true },
+
+    // ─── Wallet payment ───
+    walletTransactionId: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
+    walletPromoUsed: { type: Number, min: 0 },
+    walletAccountUsed: { type: Number, min: 0 },
 
     orderStatus: {
       type: String,

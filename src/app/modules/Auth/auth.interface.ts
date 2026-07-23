@@ -29,5 +29,7 @@ export interface IAuthResponse {
     email: string;
     role: string;
     profileImage?: string;
+    accountBalance?: number;
+    promotionalCredit?: number;
   };
 }

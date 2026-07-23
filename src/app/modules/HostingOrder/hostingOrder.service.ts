@@ -30,6 +30,7 @@ import {
 } from '../../utils/paypal';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
+import { WalletService } from '../Wallet/wallet.service';
 
 const generateOrderId = async (): Promise<string> => {
   let id = '';
@@ -325,6 +326,171 @@ export const completeHostingPurchase = async (payload: {
   } finally {
     session.endSession();
   }
+};
+
+/**
+ * Pay for a hosting plan using the customer's wallet (promotional credit first,
+ * then account balance). Single atomic transaction — hosting is provisioned
+ * locally so there is no external step that could fail after debit.
+ */
+export const payForHostingWithWallet = async (payload: {
+  planSlug: string;
+  billingCycle: THostingBillingCycle;
+  displayCurrency: TSupportedCurrency;
+  customerName: string;
+  customerEmail: string;
+  customerPhone?: string;
+  websiteLabel?: string;
+  userId: string;
+}): Promise<IHostingOrder> => {
+  const {
+    planSlug,
+    billingCycle,
+    displayCurrency,
+    customerName,
+    customerEmail,
+    customerPhone,
+    websiteLabel,
+    userId,
+  } = payload;
+
+  if (billingCycle !== 'monthly' && billingCycle !== 'yearly') {
+    throw new AppError(httpStatus.BAD_REQUEST, 'billingCycle must be monthly or yearly.');
+  }
+
+  // Double-submit guard: return the recent wallet order instead of charging again.
+  const recentWalletOrder = await HostingOrder.findOne({
+    userId: new mongoose.Types.ObjectId(userId),
+    planSlug,
+    billingCycle,
+    paymentMethod: 'wallet',
+    paymentStatus: 'paid',
+    orderStatus: { $in: ['processing', 'active'] },
+    createdAt: { $gte: new Date(Date.now() - 45_000) },
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+  if (recentWalletOrder) {
+    return recentWalletOrder as IHostingOrder;
+  }
+
+  const plan = await getActivePlanBySlug(planSlug);
+  const sellPriceUSD =
+    billingCycle === 'monthly' ? plan.monthlyPriceUSD : plan.yearlyPriceUSD;
+  if (typeof sellPriceUSD !== 'number' || sellPriceUSD <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid plan pricing.');
+  }
+
+  const { displayAmount, rate } = await convertFromUSD(sellPriceUSD, displayCurrency);
+  const orderId = await generateOrderId();
+  const now = new Date();
+  const expiresAt = addBillingPeriod(now, billingCycle);
+
+  const session = await mongoose.startSession();
+  let createdOrderId: mongoose.Types.ObjectId | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      const spend = await WalletService.spendFromWallet({
+        userId,
+        amountUSD: sellPriceUSD,
+        reference: { kind: 'hosting_order', id: orderId },
+        note: `Hosting: ${plan.name} (${billingCycle})`,
+        session,
+      });
+
+      const [order] = await HostingOrder.create(
+        [
+          {
+            orderId,
+            userId: new mongoose.Types.ObjectId(userId),
+            planSlug: plan.slug,
+            planName: plan.name,
+            planType: plan.planType,
+            billingCycle,
+            features: plan.features || [],
+            websiteLabel: websiteLabel?.trim(),
+            sellPriceUSD,
+            displayCurrency,
+            displayAmount,
+            exchangeRateUsed: rate,
+            paymentMethod: 'wallet',
+            paymentStatus: 'paid',
+            orderStatus: 'processing',
+            walletTransactionId: new mongoose.Types.ObjectId(spend.transactionId),
+            walletPromoUsed: spend.promoUsed,
+            walletAccountUsed: spend.accountUsed,
+            startsAt: now,
+            expiresAt,
+            hostingPlanId: (plan as any)._id,
+            customerName,
+            customerEmail,
+            customerPhone,
+          },
+        ],
+        { session },
+      );
+
+      const [asset] = await Hosting.create(
+        [
+          {
+            userId: new mongoose.Types.ObjectId(userId),
+            planSlug: plan.slug,
+            planName: plan.name,
+            planType: plan.planType,
+            billingCycle,
+            features: plan.features || [],
+            websiteLabel: websiteLabel?.trim(),
+            source: 'purchase',
+            status: 'active',
+            startsAt: now,
+            expiresAt,
+            amountUSD: sellPriceUSD,
+            renewPriceUSD: sellPriceUSD,
+            hostingOrderId: order._id,
+            hostingPlanId: (plan as any)._id,
+          },
+        ],
+        { session },
+      );
+
+      await HostingOrder.updateOne(
+        { _id: order._id },
+        { $set: { orderStatus: 'active', hostingAssetId: asset._id } },
+        { session },
+      );
+
+      createdOrderId = order._id;
+    });
+  } finally {
+    session.endSession();
+  }
+
+  if (!createdOrderId) {
+    throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to process wallet payment.');
+  }
+
+  // Emails (non-critical).
+  try {
+    await sendEmail(
+      customerEmail,
+      `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #4F46E5;">Hosting Activated Successfully!</h2>
+          <p>Dear ${customerName},</p>
+          <p>Your <strong>${plan.planType} ${plan.name}</strong> hosting plan is now active (paid from your wallet).</p>
+          <p><strong>Order ID:</strong> ${orderId}</p>
+          <p>Manage your hosting from <a href="${process.env.FRONTEND_URL}/my-account?tab=hosting">My Account → Hosting</a>.</p>
+        </div>
+      `,
+      `✅ Hosting "${plan.name}" Activated — BIT Software`,
+    );
+  } catch (emailErr) {
+    console.error('[HostingWallet] Customer email failed:', emailErr);
+  }
+
+  const refreshed = await HostingOrder.findById(createdOrderId).lean();
+  return refreshed as IHostingOrder;
 };
 
 export const getUserHostingOrders = async (userId: string) => {

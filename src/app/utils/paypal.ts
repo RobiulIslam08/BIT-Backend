@@ -91,7 +91,7 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
 export const createPayPalOrder = async (
   amountUSD: string,
   description: string,
-  serviceType: 'gmb' | 'domain' | 'hosting' = 'gmb',
+  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' = 'gmb',
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -100,11 +100,13 @@ export const createPayPalOrder = async (
     domain: `${frontendUrl}/domain-checkout/success`,
     hosting: `${frontendUrl}/hosting-checkout/success`,
     gmb: `${frontendUrl}/services/google-my-business`,
+    wallet: `${frontendUrl}/my-account?tab=wallet`,
   };
   const cancelUrls: Record<string, string> = {
     domain: `${frontendUrl}/domain-checkout`,
     hosting: `${frontendUrl}/hosting-checkout`,
     gmb: `${frontendUrl}/services/google-my-business`,
+    wallet: `${frontendUrl}/my-account?tab=wallet`,
   };
   const returnUrl = returnUrls[serviceType] || returnUrls.gmb;
   const cancelUrl = cancelUrls[serviceType] || cancelUrls.gmb;

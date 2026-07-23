@@ -51,6 +51,14 @@ router.post(
   DomainOrderControllers.completePurchase,
 );
 
+// Pay for a domain using wallet balance (single step, no PayPal)
+router.post(
+  '/pay-with-wallet',
+  auth('user', 'admin'),
+  purchaseLimit,
+  DomainOrderControllers.payWithWallet,
+);
+
 // Get logged-in user's domains
 router.get('/my-domains', auth('user', 'admin'), DomainOrderControllers.getMyDomains);
 

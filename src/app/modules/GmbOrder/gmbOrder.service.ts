@@ -15,6 +15,18 @@ import { getPayPalOrderDetails, capturePayPalOrder, createPayPalOrder } from '..
 import AppError from '../../errors/AppError';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
+import { WalletService } from '../Wallet/wallet.service';
+import { roundMoney } from '../../utils/money';
+
+// GMB prices are quoted in SAR. PayPal/wallet charge in USD at this fixed rate.
+const SAR_TO_USD_RATE = 3.75;
+
+/** Canonical GMB service prices in SAR (must match frontend catalog). */
+const GMB_PRICES_SAR: Record<string, number> = {
+  new: 399,
+  regular: 399,
+  recovery: 500,
+};
 
 // ─── VALID COUPON CODES ───
 // NOTE: Move to DB for dynamic management in v2
@@ -23,6 +35,20 @@ const VALID_COUPONS: Record<string, number> = {
   BIT20: 20,
   WELCOME100: 100,
   SAVE25: 25,
+};
+
+/** Server-side price for a GMB order (prevents client amount spoofing). */
+const resolveGmbFinalAmountSAR = (orderData: Partial<IGmbOrder>): number => {
+  const serviceType = String(orderData.serviceType || 'new');
+  const base = GMB_PRICES_SAR[serviceType] ?? GMB_PRICES_SAR.new;
+  // Recovery orders never accept coupons.
+  if (serviceType === 'recovery') return base;
+
+  const code = String(orderData.couponCode || '')
+    .trim()
+    .toUpperCase();
+  const discount = code && VALID_COUPONS[code] ? VALID_COUPONS[code] : 0;
+  return Math.max(0, base - discount);
 };
 
 // ─── Allowed query filter keys (NoSQL injection prevention) ───
@@ -66,7 +92,10 @@ const notifyAdmin = async (subject: string, body: string): Promise<void> => {
 // ─── Send customer order confirmation email ───
 const notifyCustomer = async (order: any): Promise<void> => {
   try {
-    const isPaypal = order.paymentMethod === 'paypal';
+    const method = order.paymentMethod;
+    const isPaid = method === 'paypal' || method === 'wallet' || order.paymentStatus === 'paid';
+    const methodLabel =
+      method === 'paypal' ? 'PayPal' : method === 'wallet' ? 'Account Balance' : 'Bank Transfer (Manual)';
     const serviceLabel =
       order.serviceType === 'new'
         ? 'New Profile Setup'
@@ -103,12 +132,12 @@ const notifyCustomer = async (order: any): Promise<void> => {
             </tr>
             <tr>
               <td style="padding: 4px 0; color: #718096;">Payment Method:</td>
-              <td style="padding: 4px 0; font-weight: bold; color: #2d3748;">${isPaypal ? 'PayPal' : 'Bank Transfer (Manual)'}</td>
+              <td style="padding: 4px 0; font-weight: bold; color: #2d3748;">${methodLabel}</td>
             </tr>
             <tr>
               <td style="padding: 4px 0; color: #718096;">Payment Status:</td>
-              <td style="padding: 4px 0; font-weight: bold; color: ${isPaypal ? '#10b981' : '#f59e0b'};">
-                ${isPaypal ? '✅ Paid' : '⏳ Pending Verification'}
+              <td style="padding: 4px 0; font-weight: bold; color: ${isPaid ? '#10b981' : '#f59e0b'};">
+                ${isPaid ? '✅ Paid' : '⏳ Pending Verification'}
               </td>
             </tr>
             <tr>
@@ -119,7 +148,7 @@ const notifyCustomer = async (order: any): Promise<void> => {
         </div>
         
         <p>${
-          isPaypal
+          isPaid
             ? 'Our team will start working on your GMB setup and will reach out to you within 24 hours.'
             : 'Our team is currently verifying your bank transfer. Once verified, we will start working on your GMB setup and send you a confirmation email.'
         }</p>
@@ -132,7 +161,7 @@ const notifyCustomer = async (order: any): Promise<void> => {
       </div>
     `;
 
-    const subject = isPaypal
+    const subject = isPaid
       ? `📦 Order Confirmed ${orderIdLabel} — BIT Software & IT Solution`
       : `⏳ Order Received ${orderIdLabel} (Pending Payment Verification) — BIT Software`;
 
@@ -155,7 +184,7 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   if (!orderData.phone || typeof orderData.phone !== 'string') {
     throw new AppError(httpStatus.BAD_REQUEST, 'Phone number is required.');
   }
-  if (!orderData.paymentMethod || !['paypal', 'manual'].includes(orderData.paymentMethod as string)) {
+  if (!orderData.paymentMethod || !['paypal', 'manual', 'wallet'].includes(orderData.paymentMethod as string)) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Valid payment method is required.');
   }
   if (!orderData.finalAmount || isNaN(Number(orderData.finalAmount)) || Number(orderData.finalAmount) <= 0) {
@@ -193,6 +222,89 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   }
   if (typeof orderData.discountAmount === 'string') {
     orderData.discountAmount = parseFloat(orderData.discountAmount as string);
+  }
+
+  // ─── Wallet Payment (logged-in customers only — via /pay-with-wallet) ───
+  if (orderData.paymentMethod === 'wallet') {
+    const userId = orderData.userId as string | undefined;
+    if (!userId) {
+      throw new AppError(httpStatus.UNAUTHORIZED, 'You must be logged in to pay with your wallet.');
+    }
+
+    // Recompute price server-side — never trust client finalAmount.
+    const finalAmountSAR = resolveGmbFinalAmountSAR(orderData);
+    if (!(finalAmountSAR > 0)) {
+      throw new AppError(httpStatus.BAD_REQUEST, 'Invalid GMB service amount.');
+    }
+    orderData.originalPrice = GMB_PRICES_SAR[String(orderData.serviceType || 'new')] ?? GMB_PRICES_SAR.new;
+    orderData.discountAmount = Math.max(0, (orderData.originalPrice || 0) - finalAmountSAR);
+    orderData.finalAmount = finalAmountSAR;
+
+    const amountUSD = roundMoney(finalAmountSAR / SAR_TO_USD_RATE);
+    const businessName = String(orderData.businessName || '').trim();
+    const serviceType = String(orderData.serviceType || 'new');
+
+    // Double-submit guard: same user + business + service within 45s.
+    const recentWalletOrder = await GmbOrder.findOne({
+      userId: new mongoose.Types.ObjectId(userId),
+      paymentMethod: 'wallet',
+      paymentStatus: 'paid',
+      businessName,
+      serviceType,
+      createdAt: { $gte: new Date(Date.now() - 45_000) },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (recentWalletOrder) {
+      return recentWalletOrder;
+    }
+
+    orderData.paymentStatus = 'paid';
+    orderData.orderStatus = 'pending_review';
+    orderData.orderId = await generateUniqueOrderId();
+    delete (orderData as any).__v;
+    delete (orderData as any)._id;
+
+    const session = await mongoose.startSession();
+    let savedWalletOrder: any = null;
+    try {
+      await session.withTransaction(async () => {
+        const spend = await WalletService.spendFromWallet({
+          userId,
+          amountUSD,
+          reference: { kind: 'gmb_order', id: orderData.orderId as string },
+          note: `GMB service: ${orderData.businessName}`,
+          session,
+        });
+        const [order] = await GmbOrder.create(
+          [
+            {
+              ...orderData,
+              businessName,
+              userId: new mongoose.Types.ObjectId(userId),
+              walletTransactionId: new mongoose.Types.ObjectId(spend.transactionId),
+              walletPromoUsed: spend.promoUsed,
+              walletAccountUsed: spend.accountUsed,
+            },
+          ],
+          { session },
+        );
+        savedWalletOrder = order;
+      });
+    } finally {
+      session.endSession();
+    }
+
+    if (!savedWalletOrder) {
+      throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to process wallet payment.');
+    }
+
+    await notifyAdmin(
+      '📦 New GMB Order (Wallet) — Action Required',
+      `Business: ${savedWalletOrder.businessName}<br/>Amount: ${savedWalletOrder.finalAmount} SAR (wallet)<br/>Order ID: #${savedWalletOrder.orderId}`,
+    );
+    await notifyCustomer(savedWalletOrder);
+    return savedWalletOrder;
   }
 
   if (orderData.paymentMethod === 'paypal') {

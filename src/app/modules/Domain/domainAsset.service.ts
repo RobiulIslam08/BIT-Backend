@@ -34,6 +34,7 @@ import {
 } from '../../utils/paypal';
 import { getDefaultPaymentMethodDoc } from '../PaymentMethod/paymentMethod.service';
 import { sendEmail } from '../../utils/sendEmail';
+import { WalletService } from '../Wallet/wallet.service';
 
 const RENEW_WINDOW_DAYS = 15; // auto-renew fires within this many days of expiry
 const REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // resend reminder at most weekly
@@ -485,6 +486,172 @@ export const completeRenew = async (payload: { userId: string; paypalOrderId: st
 
   // 2. Fulfil the renewal.
   await fulfilRenewal(domain, renewal, captureId);
+
+  // 3. Notify the customer.
+  await sendRenewalSuccessEmail(domain, renewal);
+
+  return domain.toObject() as IDomain;
+};
+
+// ─── Manual renewal (user-initiated, Account Balance / Wallet) ───
+
+/**
+ * Renew a domain instantly using the customer's wallet (promotional credit
+ * first, then account balance). The wallet is debited atomically together with
+ * the renewal record; if provider fulfilment later fails the wallet is refunded.
+ */
+export const renewWithWallet = async (payload: {
+  userId: string;
+  domainId: string;
+  displayCurrency: TSupportedCurrency;
+}) => {
+  const { userId, domainId, displayCurrency } = payload;
+
+  const domain = await Domain.findOne({
+    _id: domainId,
+    userId: new mongoose.Types.ObjectId(userId),
+  });
+  if (!domain) throw new AppError(httpStatus.NOT_FOUND, 'Domain not found.');
+
+  const years = 1;
+  const { priceUSD } = await resolveRenewPriceUSD(domain);
+  const { displayAmount, rate } = await convertFromUSD(priceUSD, displayCurrency);
+
+  // Block concurrent wallet renewals (and overlap with an in-flight PayPal renew).
+  const inflight = await DomainRenewal.findOne({
+    domainId: domain._id,
+    status: 'processing',
+  }).lean();
+  if (inflight) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      'A renewal for this domain is already in progress. Please wait a moment and refresh.',
+    );
+  }
+
+  // 1. Debit wallet + create the renewal record atomically.
+  const session = await mongoose.startSession();
+  let spend: { promoUsed: number; accountUsed: number; transactionId: string } | undefined;
+  let renewalId: mongoose.Types.ObjectId | undefined;
+  try {
+    await session.withTransaction(async () => {
+      const conflict = await DomainRenewal.findOne({
+        domainId: domain._id,
+        status: 'processing',
+      }).session(session);
+      if (conflict) {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          'A renewal for this domain is already in progress. Please wait a moment and refresh.',
+        );
+      }
+
+      spend = await WalletService.spendFromWallet({
+        userId,
+        amountUSD: priceUSD,
+        reference: { kind: 'domain_renewal', id: domain.domainName },
+        note: `Domain renewal: ${domain.domainName} (${years} year)`,
+        session,
+      });
+
+      try {
+        const [renewalDoc] = await DomainRenewal.create(
+          [
+            {
+              domainId: domain._id,
+              userId: domain.userId,
+              domainName: domain.domainName,
+              tld: domain.tld,
+              type: 'manual',
+              years,
+              amountUSD: priceUSD,
+              displayCurrency,
+              displayAmount,
+              exchangeRateUsed: rate,
+              managedByNamecheap: domain.managedByNamecheap,
+              paymentMethod: 'wallet',
+              paymentStatus: 'paid',
+              status: 'processing',
+              previousExpiresAt: domain.expiresAt,
+              walletTransactionId: new mongoose.Types.ObjectId(spend.transactionId),
+              walletPromoUsed: spend.promoUsed,
+              walletAccountUsed: spend.accountUsed,
+            },
+          ],
+          { session },
+        );
+        renewalId = renewalDoc._id as mongoose.Types.ObjectId;
+      } catch (createErr: any) {
+        if (createErr?.code === 11000) {
+          throw new AppError(
+            httpStatus.CONFLICT,
+            'A renewal for this domain is already in progress. Please wait a moment and refresh.',
+          );
+        }
+        throw createErr;
+      }
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const renewal = await DomainRenewal.findById(renewalId);
+  if (!renewal || !spend) {
+    throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Renewal record could not be created.');
+  }
+
+  // 2. Fulfil the renewal. On failure, refund the wallet.
+  try {
+    if (domain.managedByNamecheap) {
+      const result = await renewDomainOnNamecheap(domain.domainName, years);
+      const newExpiry = result.expiresAt || nextExpiry(domain.expiresAt, years);
+      domain.expiresAt = newExpiry;
+      domain.status = 'active';
+      domain.lastRenewedAt = new Date();
+      await domain.save();
+
+      renewal.status = 'completed';
+      renewal.providerOrderId = result.providerOrderId ?? undefined;
+      renewal.newExpiresAt = newExpiry;
+      await renewal.save();
+    } else {
+      const newExpiry = nextExpiry(domain.expiresAt, years);
+      domain.expiresAt = newExpiry;
+      domain.status = 'active';
+      domain.lastRenewedAt = new Date();
+      await domain.save();
+
+      renewal.status = 'completed';
+      renewal.requiresManualRegistrarAction = true;
+      renewal.newExpiresAt = newExpiry;
+      await renewal.save();
+
+      await sendAdminManualRenewalAlert(domain, renewal);
+    }
+  } catch (err: any) {
+    // Provider fulfilment failed after debit → refund the wallet.
+    try {
+      await WalletService.refundToWallet({
+        userId,
+        accountAmount: spend.accountUsed,
+        promoAmount: spend.promoUsed,
+        reference: { kind: 'domain_renewal', id: domain.domainName },
+        note: `Refund — renewal failed: ${domain.domainName}`,
+      });
+      renewal.paymentStatus = 'refunded';
+    } catch {
+      /* manual refund required — logged in wallet service */
+    }
+    renewal.status = 'failed';
+    renewal.failureReason = err.message || 'Provider renewal failed.';
+    await renewal.save();
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      renewal.paymentStatus === 'refunded'
+        ? 'The renewal could not be completed and your account balance has been refunded.'
+        : 'The renewal could not be completed. Our team will contact you shortly.',
+    );
+  }
 
   // 3. Notify the customer.
   await sendRenewalSuccessEmail(domain, renewal);

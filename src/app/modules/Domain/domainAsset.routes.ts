@@ -45,6 +45,12 @@ router.post(
   renewLimit,
   DomainControllers.createRenewOrder,
 );
+router.post(
+  '/my/:id/renew/wallet',
+  auth('user', 'admin'),
+  renewLimit,
+  DomainControllers.renewWithWallet,
+);
 
 // ─── ADMIN: CRUD ───
 router.get('/', auth('admin'), DomainControllers.getAllDomains);

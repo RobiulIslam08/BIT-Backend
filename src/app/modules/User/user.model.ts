@@ -107,9 +107,18 @@ const userSchema = new Schema<IUserDocument, IUserModel>(
       type: String,
       trim: true,
     },
+    // Withdrawable balance (money the customer topped up, minus fee). Stored in USD.
     accountBalance: {
       type: Number,
       default: 0,
+      min: 0,
+    },
+    // Non-withdrawable promotional/gift credit granted by admin (offers, bonuses).
+    // Spendable on services but can never be withdrawn. Stored in USD.
+    promotionalCredit: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     isDeleted: {
       type: Boolean,

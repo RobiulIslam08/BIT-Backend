@@ -39,6 +39,7 @@ export interface IUser {
   postalCode?: string;
   country?: string;
   accountBalance?: number;
+  promotionalCredit?: number;
   isDeleted: boolean;
   passwordChangedAt?: Date;
   otp?: string;
@@ -90,6 +91,7 @@ export interface IUserResponse {
   postalCode?: string;
   country?: string;
   accountBalance?: number;
+  promotionalCredit?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }

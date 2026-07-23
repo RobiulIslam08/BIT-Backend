@@ -27,10 +27,16 @@ export interface IDomainRenewal {
 
   managedByNamecheap: boolean;
 
+  paymentMethod?: 'paypal' | 'wallet';
   paymentStatus: TRenewalPaymentStatus;
   paypalOrderId?: string;
   paypalCaptureId?: string;
   paypalRefundId?: string;
+
+  // Wallet payment (when paymentMethod === 'wallet')
+  walletTransactionId?: Types.ObjectId;
+  walletPromoUsed?: number;
+  walletAccountUsed?: number;
 
   status: TRenewalStatus;
   providerOrderId?: string;

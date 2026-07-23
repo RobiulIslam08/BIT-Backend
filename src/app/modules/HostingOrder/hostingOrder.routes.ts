@@ -43,6 +43,13 @@ router.post(
   HostingOrderControllers.completePurchase,
 );
 
+router.post(
+  '/pay-with-wallet',
+  auth('user', 'admin'),
+  purchaseLimit,
+  HostingOrderControllers.payWithWallet,
+);
+
 router.get('/my', auth('user', 'admin'), HostingOrderControllers.getMyOrders);
 router.get('/:id', auth('user', 'admin'), HostingOrderControllers.getOrderById);
 

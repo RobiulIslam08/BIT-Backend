@@ -60,6 +60,38 @@ const completePurchase = catchAsync(async (req, res) => {
   });
 });
 
+// ─── POST /api/v1/domain-orders/pay-with-wallet ───
+const payWithWallet = catchAsync(async (req, res) => {
+  const { domainName, displayCurrency, customerName, customerEmail, customerPhone } = req.body;
+  const userId = req.user.userId as string;
+
+  if (!domainName) throw new AppError(httpStatus.BAD_REQUEST, 'domainName is required.');
+  if (!customerName) throw new AppError(httpStatus.BAD_REQUEST, 'customerName is required.');
+  if (!customerEmail) throw new AppError(httpStatus.BAD_REQUEST, 'customerEmail is required.');
+
+  const currency: TSupportedCurrency = VALID_CURRENCIES.includes(displayCurrency)
+    ? (displayCurrency as TSupportedCurrency)
+    : 'SAR';
+
+  const result = await DomainOrderService.payForDomainWithWallet({
+    domainName,
+    displayCurrency: currency,
+    customerName,
+    customerEmail,
+    customerPhone,
+    userId,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: (result as any).orderStatus === 'active'
+      ? `Domain "${(result as any).domainName}" successfully registered!`
+      : 'Purchase processed.',
+    data: result,
+  });
+});
+
 // ─── GET /api/v1/domain-orders/my-domains ───
 const getMyDomains = catchAsync(async (req, res) => {
   const userId = req.user.userId as string;
@@ -132,6 +164,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
 export const DomainOrderControllers = {
   createPayPalOrder,
   completePurchase,
+  payWithWallet,
   getMyDomains,
   getExchangeRates,
   getDomainOrderById,

@@ -11,6 +11,15 @@ import { GmbOrderServices } from './gmbOrder.service';
 const submitOrder = catchAsync(async (req, res) => {
   const orderData = req.body;
 
+  // Wallet payments must go through the authenticated /pay-with-wallet route.
+  // Never accept paymentMethod=wallet on the public submit endpoint.
+  if (orderData?.paymentMethod === 'wallet') {
+    return res.status(400).json({
+      success: false,
+      message: 'Please use the wallet checkout endpoint while logged in.',
+    });
+  }
+
   // If a payment screenshot was uploaded via multer memoryStorage,
   // convert the buffer to a base64 data URI for MongoDB storage.
   // (Vercel serverless filesystem is read-only — no disk writes allowed)
@@ -26,6 +35,20 @@ const submitOrder = catchAsync(async (req, res) => {
     statusCode: httpStatus.CREATED,
     success: true,
     message: 'GMB order placed successfully.',
+    data: result,
+  });
+});
+
+// ==================== PAY WITH WALLET (Authenticated) ====================
+const payWithWallet = catchAsync(async (req, res) => {
+  const orderData = { ...req.body, paymentMethod: 'wallet', userId: req.user.userId };
+
+  const result = await GmbOrderServices.submitGmbOrder(orderData);
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: 'GMB order placed successfully (paid from wallet).',
     data: result,
   });
 });
@@ -123,6 +146,7 @@ const createPayPalOrder = catchAsync(async (req, res) => {
 
 export const GmbOrderControllers = {
   submitOrder,
+  payWithWallet,
   validateCoupon,
   getOrderById,
   getAllOrders,

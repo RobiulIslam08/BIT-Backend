@@ -26,6 +26,7 @@ const DomainRenewalSchema = new Schema<IDomainRenewal>(
 
     managedByNamecheap: { type: Boolean, default: false },
 
+    paymentMethod: { type: String, enum: ['paypal', 'wallet'], default: 'paypal' },
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'failed', 'refunded'],
@@ -35,6 +36,11 @@ const DomainRenewalSchema = new Schema<IDomainRenewal>(
     paypalOrderId: { type: String, unique: true, sparse: true, trim: true },
     paypalCaptureId: { type: String, trim: true },
     paypalRefundId: { type: String, trim: true },
+
+    // Wallet payment
+    walletTransactionId: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
+    walletPromoUsed: { type: Number, min: 0 },
+    walletAccountUsed: { type: Number, min: 0 },
 
     status: {
       type: String,
@@ -51,6 +57,17 @@ const DomainRenewalSchema = new Schema<IDomainRenewal>(
     requiresManualRegistrarAction: { type: Boolean, default: false },
   },
   { timestamps: true },
+);
+
+DomainRenewalSchema.index({ domainId: 1, status: 1, createdAt: -1 });
+// Only one in-flight renewal per domain (wallet or PayPal processing claim).
+DomainRenewalSchema.index(
+  { domainId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'processing' },
+    name: 'uniq_domain_renewal_processing',
+  },
 );
 
 export const DomainRenewal = model<IDomainRenewal>('DomainRenewal', DomainRenewalSchema);

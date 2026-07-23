@@ -32,12 +32,17 @@ export interface IHostingOrder {
   displayAmount: number;
   exchangeRateUsed: number;
 
-  paymentMethod: 'paypal';
+  paymentMethod: 'paypal' | 'wallet';
   paymentStatus: THostingPaymentStatus;
   paypalOrderId?: string;
   paypalCaptureId?: string;
   paypalTransactionId?: string;
   paypalRefundId?: string;
+
+  // ─── Wallet payment (when paymentMethod === 'wallet') ───
+  walletTransactionId?: Types.ObjectId;
+  walletPromoUsed?: number;
+  walletAccountUsed?: number;
 
   orderStatus: THostingOrderStatus;
   failureReason?: string;
