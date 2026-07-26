@@ -99,6 +99,21 @@ const getMyWithdrawals = catchAsync(async (req, res) => {
   });
 });
 
+const sendMoney = catchAsync(async (req, res) => {
+  const result = await WalletService.sendMoney({
+    senderId: req.user.userId as string,
+    amountUSD: Number(req.body.amountUSD),
+    recipient: String(req.body.recipient),
+    note: req.body.note,
+  });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Money sent successfully.',
+    data: result,
+  });
+});
+
 // ─── Admin ───
 const getSettings = catchAsync(async (_req, res) => {
   const result = await WalletService.getSettings();
@@ -211,6 +226,7 @@ export const WalletControllers = {
   completeTopup,
   createWithdrawal,
   getMyWithdrawals,
+  sendMoney,
   getSettings,
   updateSettings,
   grantCredit,

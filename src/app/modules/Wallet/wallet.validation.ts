@@ -53,6 +53,21 @@ const createWithdrawal = z.object({
   }),
 });
 
+const sendMoney = z.object({
+  body: z.object({
+    amountUSD: z.coerce
+      .number({ message: 'amountUSD must be a number' })
+      .int('Send money amounts must be whole USD')
+      .positive('Send amount must be greater than zero'),
+    recipient: z
+      .string({ message: 'recipient is required' })
+      .trim()
+      .min(1, 'Enter a recipient email or user code')
+      .max(254),
+    note: z.preprocess(blankToUndefined, z.string().trim().max(200).optional()),
+  }),
+});
+
 // ─── Admin ───
 const updateSettings = z.object({
   body: z.object({
@@ -105,6 +120,7 @@ export const WalletValidation = {
   createTopupOrder,
   completeTopup,
   createWithdrawal,
+  sendMoney,
   updateSettings,
   grantCredit,
   adjustBalance,

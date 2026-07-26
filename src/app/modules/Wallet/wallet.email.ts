@@ -435,3 +435,90 @@ export const sendGrantCreditEmail = async (params: {
       `🎁 Promotional Credit — ${fmtUSD(params.amountUSD)} — BIT Software`,
     );
   });
+
+// ─── Send money (P2P) — sender ───
+export const sendMoneySentEmail = async (params: {
+  userId: string;
+  amountUSD: number;
+  recipientName: string;
+  recipientUserCode?: string;
+  note?: string;
+  transferId: string;
+  balanceAfterAccount: number;
+  balanceAfterPromo: number;
+}) =>
+  safeSend('send-money-sent', async () => {
+    const user = await getCustomer(params.userId);
+    if (!user) return;
+
+    const recipientLabel = params.recipientUserCode
+      ? `${params.recipientName} (#${params.recipientUserCode})`
+      : params.recipientName;
+
+    const rows =
+      row('Transaction', 'Send Money') +
+      row('Status', 'Completed') +
+      row('Amount Sent', fmtUSD(params.amountUSD)) +
+      row('Recipient', escapeHtml(recipientLabel)) +
+      row('Transfer ID', escapeHtml(params.transferId)) +
+      (params.note ? row('Note', escapeHtml(params.note)) : '') +
+      balanceRows(params.balanceAfterAccount, params.balanceAfterPromo);
+
+    await sendEmail(
+      user.email,
+      emailShell(
+        'Money Sent Successfully',
+        '#2563EB',
+        `
+          <p>Dear ${escapeHtml(user.name)},</p>
+          <p>You sent money from your Account Balance. The transfer was instant and had no fee.</p>
+          ${detailTable(rows)}
+        `,
+      ),
+      `💸 Money Sent — ${fmtUSD(params.amountUSD)} — BIT Software`,
+    );
+  });
+
+// ─── Send money (P2P) — receiver ───
+export const sendMoneyReceivedEmail = async (params: {
+  userId: string;
+  amountUSD: number;
+  senderName: string;
+  senderUserCode?: string;
+  note?: string;
+  transferId: string;
+  balanceAfterAccount: number;
+  balanceAfterPromo: number;
+}) =>
+  safeSend('send-money-received', async () => {
+    const user = await getCustomer(params.userId);
+    if (!user) return;
+
+    const senderLabel = params.senderUserCode
+      ? `${params.senderName} (#${params.senderUserCode})`
+      : params.senderName;
+
+    const rows =
+      row('Transaction', 'Money Received') +
+      row('Status', 'Completed') +
+      row('Amount Received', fmtUSD(params.amountUSD)) +
+      row('From', escapeHtml(senderLabel)) +
+      row('Credited To', 'Account Balance (withdrawable)') +
+      row('Transfer ID', escapeHtml(params.transferId)) +
+      (params.note ? row('Note', escapeHtml(params.note)) : '') +
+      balanceRows(params.balanceAfterAccount, params.balanceAfterPromo);
+
+    await sendEmail(
+      user.email,
+      emailShell(
+        'You Received Money',
+        '#16a34a',
+        `
+          <p>Dear ${escapeHtml(user.name)},</p>
+          <p>Another customer sent money to your Account Balance. Details below:</p>
+          ${detailTable(rows)}
+        `,
+      ),
+      `💰 Money Received — ${fmtUSD(params.amountUSD)} — BIT Software`,
+    );
+  });

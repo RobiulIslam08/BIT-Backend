@@ -8,6 +8,7 @@
 //     POST  /api/v1/wallet/topup/complete
 //     POST  /api/v1/wallet/withdrawals
 //     GET   /api/v1/wallet/withdrawals
+//     POST  /api/v1/wallet/send-money
 //   Admin:
 //     GET   /api/v1/wallet/settings
 //     PATCH /api/v1/wallet/settings
@@ -45,6 +46,15 @@ const withdrawalLimit = rateLimit({
   skip: () => process.env.NODE_ENV === 'test',
 });
 
+const sendMoneyLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many send-money attempts. Please wait a while.' },
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
 // ─── Customer ───
 router.get('/summary', auth(UserRole.USER, UserRole.ADMIN), WalletControllers.getSummary);
 router.get('/transactions', auth(UserRole.USER, UserRole.ADMIN), WalletControllers.getTransactions);
@@ -71,6 +81,14 @@ router.post(
   WalletControllers.createWithdrawal,
 );
 router.get('/withdrawals', auth(UserRole.USER, UserRole.ADMIN), WalletControllers.getMyWithdrawals);
+
+router.post(
+  '/send-money',
+  auth(UserRole.USER, UserRole.ADMIN),
+  sendMoneyLimit,
+  validateRequest(WalletValidation.sendMoney),
+  WalletControllers.sendMoney,
+);
 
 // ─── Admin: settings ───
 router.get('/settings', auth(UserRole.ADMIN), WalletControllers.getSettings);

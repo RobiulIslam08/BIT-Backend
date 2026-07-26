@@ -14,6 +14,8 @@ export type TWalletTxnType =
   | 'bonus_credit' // admin gifted promotional credit
   | 'withdrawal' // customer withdrew account balance (funds held/removed)
   | 'withdrawal_reversal' // admin rejected a withdrawal → funds returned
+  | 'transfer_out' // peer send — debit sender accountBalance
+  | 'transfer_in' // peer send — credit receiver accountBalance
   | 'adjustment'; // manual admin correction
 
 export type TWalletTxnStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
@@ -25,6 +27,7 @@ export type TWalletRefKind =
   | 'domain_renewal'
   | 'paypal_topup'
   | 'withdrawal'
+  | 'transfer'
   | 'admin';
 
 export interface IWalletTxnReference {

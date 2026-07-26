@@ -57,7 +57,10 @@ import {
   sendWalletRefundEmail,
   sendBalanceAdjustmentEmail,
   sendGrantCreditEmail,
+  sendMoneySentEmail,
+  sendMoneyReceivedEmail,
 } from './wallet.email';
+import { UserStatus } from '../User/user.interface';
 
 type IWalletTxnTypeName = TWalletTxnType;
 
@@ -333,6 +336,8 @@ export const getWalletSummary = async (userId: string) => {
     totalBalance: addMoney(accountBalance, promotionalCredit),
     // Max whole-USD payout after applying the withdraw fee.
     withdrawableWholeUSD: maxWithdrawablePayout(accountBalance, withdrawFeePercent),
+    // Max whole-USD that can be sent P2P (no fee — account balance only).
+    sendableWholeUSD: wholeUnits(accountBalance),
     currency: 'USD',
     feePercent: settings.topupFeePercent, // top-up fee (kept for TopupModal)
     withdrawFeePercent,
@@ -1287,6 +1292,181 @@ export const getUserTransactions = async (
   return getMyTransactions(userId, query);
 };
 
+// ============================================
+// SEND MONEY (P2P — accountBalance only, instant, no fee)
+// ============================================
+const resolveSendRecipient = async (recipientRaw: string) => {
+  const recipient = String(recipientRaw || '').trim();
+  if (!recipient) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Enter a recipient email or user code.');
+  }
+
+  const looksLikeEmail = recipient.includes('@');
+  const user = looksLikeEmail
+    ? await User.findOne({ email: recipient.toLowerCase() }).select(
+        '_id name email userCode status isDeleted',
+      )
+    : await User.findOne({ userCode: recipient }).select(
+        '_id name email userCode status isDeleted',
+      );
+
+  if (!user || user.isDeleted) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      looksLikeEmail
+        ? 'No registered customer found with that email.'
+        : 'No registered customer found with that user code.',
+    );
+  }
+  if (user.status === UserStatus.BLOCKED) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'This recipient account cannot receive money.');
+  }
+
+  return user;
+};
+
+const maskEmail = (email: string) => {
+  const [local, domain] = String(email || '').split('@');
+  if (!local || !domain) return '***';
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}***@${domain}`;
+};
+
+export const sendMoney = async (params: {
+  senderId: string;
+  amountUSD: number;
+  recipient: string;
+  note?: string;
+}) => {
+  const amount = roundMoney(params.amountUSD);
+
+  if (!isWholeAmount(amount) || amount < 1) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Send amount must be a whole number of at least $1.',
+    );
+  }
+
+  const sender = await User.findById(params.senderId).select(
+    'accountBalance name email userCode status isDeleted',
+  );
+  if (!sender || sender.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'User not found.');
+  }
+  if (sender.status === UserStatus.BLOCKED) {
+    throw new AppError(httpStatus.FORBIDDEN, 'Your account cannot send money.');
+  }
+
+  const sendable = wholeUnits(roundMoney(sender.accountBalance || 0));
+  if (amount > sendable) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      sendable < 1
+        ? 'Insufficient Account Balance. Promotional credit cannot be sent.'
+        : `You can send at most $${sendable} from your Account Balance.`,
+    );
+  }
+
+  const receiver = await resolveSendRecipient(params.recipient);
+  if (receiver._id.toString() === params.senderId) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'You cannot send money to yourself.');
+  }
+
+  const note = params.note?.trim() || undefined;
+  const transferId = new mongoose.Types.ObjectId().toString();
+
+  let senderBalances = { balanceAfterAccount: 0, balanceAfterPromo: 0 };
+  let receiverBalances = { balanceAfterAccount: 0, balanceAfterPromo: 0 };
+
+  await runInSession(undefined, async (session) => {
+    senderBalances = await applyBalanceDelta(
+      { userId: params.senderId, accountDelta: -amount },
+      session,
+    );
+
+    receiverBalances = await applyBalanceDelta(
+      { userId: receiver._id, accountDelta: amount },
+      session,
+    );
+
+    const senderLabel = sender.userCode
+      ? `${sender.name || 'Customer'} (#${sender.userCode})`
+      : sender.name || 'Customer';
+    const receiverLabel = receiver.userCode
+      ? `${receiver.name || 'Customer'} (#${receiver.userCode})`
+      : receiver.name || 'Customer';
+
+    await recordTxn(
+      {
+        userId: params.senderId,
+        type: 'transfer_out',
+        status: 'completed',
+        accountAmount: -amount,
+        netUSD: amount,
+        balanceAfterAccount: senderBalances.balanceAfterAccount,
+        balanceAfterPromo: senderBalances.balanceAfterPromo,
+        reference: { kind: 'transfer', id: transferId },
+        note: note
+          ? `Sent to ${receiverLabel}. ${note}`
+          : `Sent to ${receiverLabel}.`,
+      },
+      session,
+    );
+
+    await recordTxn(
+      {
+        userId: receiver._id,
+        type: 'transfer_in',
+        status: 'completed',
+        accountAmount: amount,
+        netUSD: amount,
+        balanceAfterAccount: receiverBalances.balanceAfterAccount,
+        balanceAfterPromo: receiverBalances.balanceAfterPromo,
+        reference: { kind: 'transfer', id: transferId },
+        note: note
+          ? `Received from ${senderLabel}. ${note}`
+          : `Received from ${senderLabel}.`,
+      },
+      session,
+    );
+  });
+
+  await sendMoneySentEmail({
+    userId: params.senderId,
+    amountUSD: amount,
+    recipientName: (receiver.name as string) || 'Customer',
+    recipientUserCode: receiver.userCode,
+    note,
+    transferId,
+    balanceAfterAccount: senderBalances.balanceAfterAccount,
+    balanceAfterPromo: senderBalances.balanceAfterPromo,
+  });
+
+  await sendMoneyReceivedEmail({
+    userId: receiver._id.toString(),
+    amountUSD: amount,
+    senderName: (sender.name as string) || 'Customer',
+    senderUserCode: sender.userCode,
+    note,
+    transferId,
+    balanceAfterAccount: receiverBalances.balanceAfterAccount,
+    balanceAfterPromo: receiverBalances.balanceAfterPromo,
+  });
+
+  return {
+    transferId,
+    amountUSD: amount,
+    recipient: {
+      name: receiver.name,
+      userCode: receiver.userCode || null,
+      emailMasked: maskEmail(receiver.email as string),
+    },
+    balanceAfterAccount: senderBalances.balanceAfterAccount,
+    balanceAfterPromo: senderBalances.balanceAfterPromo,
+    summary: await getWalletSummary(params.senderId),
+  };
+};
+
 export const WalletService = {
   getSettings,
   updateSettings,
@@ -1299,6 +1479,7 @@ export const WalletService = {
   completeTopup,
   requestWithdrawal,
   getMyWithdrawals,
+  sendMoney,
   grantCredit,
   adjustBalance,
   listWithdrawals,
