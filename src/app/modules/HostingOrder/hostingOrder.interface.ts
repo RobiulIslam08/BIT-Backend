@@ -58,6 +58,12 @@ export interface IHostingOrder {
   customerEmail: string;
   customerPhone?: string;
 
+  /** Existing domain name attached for DNS / website label (not a paid domain line). */
+  attachedDomain?: string;
+
+  // Shared id when this line was paid via multi-item cart checkout
+  cartCheckoutId?: string;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

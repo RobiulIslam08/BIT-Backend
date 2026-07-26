@@ -58,6 +58,7 @@ const WalletTransactionSchema = new Schema<IWalletTransaction>(
           'hosting_order',
           'gmb_order',
           'domain_renewal',
+          'cart_checkout',
           'paypal_topup',
           'withdrawal',
           'transfer',

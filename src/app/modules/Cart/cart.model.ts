@@ -1,27 +1,33 @@
 // ============================================
-// BIT SOFTWARE — Hosting Order Model
+// BIT SOFTWARE — Cart Checkout Model
 // ============================================
 
 import { Schema, model } from 'mongoose';
-import { IHostingOrder } from './hostingOrder.interface';
+import { ICartCheckout } from './cart.interface';
 
-const HostingOrderSchema = new Schema<IHostingOrder>(
+const CartLineResultSchema = new Schema(
   {
-    orderId: { type: String, unique: true, sparse: true, trim: true },
+    type: { type: String, enum: ['domain', 'hosting'], required: true },
+    label: { type: String, required: true, trim: true },
+    sellPriceUSD: { type: Number, required: true, min: 0 },
+    status: { type: String, enum: ['active', 'failed', 'pending'], required: true },
+    orderId: { type: String, trim: true },
+    dbOrderId: { type: String, trim: true },
+    failureReason: { type: String, trim: true, maxlength: 1000 },
+    refundedUSD: { type: Number, min: 0 },
+  },
+  { _id: false },
+);
+
+const CartCheckoutSchema = new Schema<ICartCheckout>(
+  {
+    cartCheckoutId: { type: String, unique: true, sparse: true, trim: true },
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
       index: true,
     },
-
-    planSlug: { type: String, required: true, trim: true, lowercase: true, maxlength: 80 },
-    planName: { type: String, required: true, trim: true, maxlength: 100 },
-    planType: { type: String, enum: ['shared', 'vps'], required: true },
-    billingCycle: { type: String, enum: ['monthly', 'yearly'], required: true },
-    features: { type: [String], default: [] },
-    websiteLabel: { type: String, trim: true, maxlength: 253 },
-    attachedDomain: { type: String, trim: true, lowercase: true, maxlength: 253 },
 
     sellPriceUSD: { type: Number, required: true, min: 0 },
     displayCurrency: {
@@ -36,7 +42,7 @@ const HostingOrderSchema = new Schema<IHostingOrder>(
     paymentMethod: { type: String, enum: ['paypal', 'wallet'], required: true, default: 'paypal' },
     paymentStatus: {
       type: String,
-      enum: ['pending', 'paid', 'failed', 'refunded'],
+      enum: ['pending', 'paid', 'failed', 'partially_refunded', 'refunded'],
       default: 'pending',
       index: true,
     },
@@ -45,25 +51,18 @@ const HostingOrderSchema = new Schema<IHostingOrder>(
     paypalTransactionId: { type: String, unique: true, sparse: true, trim: true },
     paypalRefundId: { type: String, unique: true, sparse: true, trim: true },
 
-    // ─── Wallet payment ───
     walletTransactionId: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
     walletPromoUsed: { type: Number, min: 0 },
     walletAccountUsed: { type: Number, min: 0 },
 
-    orderStatus: {
+    status: {
       type: String,
-      enum: ['pending_payment', 'processing', 'active', 'failed', 'cancelled'],
+      enum: ['pending_payment', 'processing', 'completed', 'partial', 'failed', 'cancelled'],
       default: 'pending_payment',
       index: true,
     },
     failureReason: { type: String, trim: true, maxlength: 1000 },
-    refundedAt: { type: Date },
     abandonedAt: { type: Date },
-
-    startsAt: { type: Date },
-    expiresAt: { type: Date },
-    hostingAssetId: { type: Schema.Types.ObjectId, ref: 'Hosting' },
-    hostingPlanId: { type: Schema.Types.ObjectId, ref: 'HostingPlan' },
 
     customerName: { type: String, required: true, trim: true, maxlength: 200 },
     customerEmail: {
@@ -76,19 +75,20 @@ const HostingOrderSchema = new Schema<IHostingOrder>(
     },
     customerPhone: { type: String, trim: true, maxlength: 30 },
 
-    cartCheckoutId: { type: String, trim: true, index: true, sparse: true },
+    domainOrderIds: [{ type: Schema.Types.ObjectId, ref: 'DomainOrder' }],
+    hostingOrderIds: [{ type: Schema.Types.ObjectId, ref: 'HostingOrder' }],
+    lineResults: { type: [CartLineResultSchema], default: [] },
   },
   { timestamps: true },
 );
 
-HostingOrderSchema.index({ orderStatus: 1, paymentStatus: 1, createdAt: -1 });
-HostingOrderSchema.index({ userId: 1, orderStatus: 1, createdAt: -1 });
-HostingOrderSchema.index(
+CartCheckoutSchema.index({ userId: 1, status: 1, createdAt: -1 });
+CartCheckoutSchema.index(
   { abandonedAt: 1 },
   {
     expireAfterSeconds: 60 * 60 * 24 * 30,
-    name: 'ttl_hosting_abandoned_retention',
+    name: 'ttl_cart_abandoned_retention',
   },
 );
 
-export const HostingOrder = model<IHostingOrder>('HostingOrder', HostingOrderSchema);
+export const CartCheckout = model<ICartCheckout>('CartCheckout', CartCheckoutSchema);

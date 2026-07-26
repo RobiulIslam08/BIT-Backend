@@ -97,6 +97,9 @@ const DomainOrderSchema = new Schema<IDomainOrder>(
       match: [/^\S+@\S+\.\S+$/, 'Invalid email format'],
     },
     customerPhone: { type: String, trim: true, maxlength: 30 },
+
+    // Shared id when this line was paid via multi-item cart checkout
+    cartCheckoutId: { type: String, trim: true, index: true, sparse: true },
   },
   {
     timestamps: true,

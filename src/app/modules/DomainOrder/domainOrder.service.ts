@@ -111,7 +111,7 @@ const generateOrderId = async (): Promise<string> => {
 };
 
 // ─── Namecheap Domain Registration ───
-const registerDomainOnNamecheap = async (
+export const registerDomainOnNamecheap = async (
   domainName: string,
   years: number,
 ): Promise<{ namecheapOrderId: string; registeredAt: Date; expiresAt: Date }> => {

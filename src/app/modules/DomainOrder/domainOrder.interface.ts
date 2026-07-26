@@ -61,6 +61,9 @@ export interface IDomainOrder {
   customerEmail: string;
   customerPhone?: string;
 
+  // ─── Multi-item cart checkout (optional) ───
+  cartCheckoutId?: string;
+
   // ─── Timestamps ───
   createdAt?: Date;
   updatedAt?: Date;

@@ -13,6 +13,7 @@ import { HostingPlanRoutes } from "../modules/HostingPlan/hostingPlan.routes"
 import { HostingOrderRoutes } from "../modules/HostingOrder/hostingOrder.routes"
 import { HostingRoutes } from "../modules/Hosting/hosting.routes"
 import { WalletRoutes } from "../modules/Wallet/wallet.routes"
+import { CartRoutes } from "../modules/Cart/cart.routes"
 
 const router = express.Router()
 
@@ -65,6 +66,10 @@ const moduleRoute = [
     {
     path: '/wallet',
     route: WalletRoutes,
+  },
+    {
+    path: '/cart',
+    route: CartRoutes,
   },
 ]
 moduleRoute.forEach(route => router.use(route.path, route.route))
