@@ -49,6 +49,15 @@ import {
 } from '../../utils/paypal';
 import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
+import {
+  sendTopupSuccessEmail,
+  sendWithdrawalRequestedEmail,
+  sendWithdrawalPaidEmail,
+  sendWithdrawalRejectedEmail,
+  sendWalletRefundEmail,
+  sendBalanceAdjustmentEmail,
+  sendGrantCreditEmail,
+} from './wallet.email';
 
 type IWalletTxnTypeName = TWalletTxnType;
 
@@ -492,7 +501,7 @@ export const refundToWallet = async (params: {
   const promoAmount = roundMoney(params.promoAmount || 0);
   if (accountAmount === 0 && promoAmount === 0) return;
 
-  await runInSession(params.session, async (session) => {
+  const resultBalances = await runInSession(params.session, async (session) => {
     const balances = await applyBalanceDelta(
       { userId: params.userId, accountDelta: accountAmount, promoDelta: promoAmount },
       session,
@@ -511,7 +520,22 @@ export const refundToWallet = async (params: {
       },
       session,
     );
+    return balances;
   });
+
+  // Email only after our own transaction commits. When nested in an outer
+  // session the caller owns the commit — skip here to avoid email-on-rollback.
+  if (!params.session) {
+    await sendWalletRefundEmail({
+      userId: params.userId,
+      accountAmount,
+      promoAmount,
+      reference: params.reference,
+      note: params.note,
+      balanceAfterAccount: resultBalances.balanceAfterAccount,
+      balanceAfterPromo: resultBalances.balanceAfterPromo,
+    });
+  }
 };
 
 // ============================================
@@ -795,33 +819,16 @@ export const completeTopup = async (params: {
     );
   }
 
-  // Confirmation email (non-critical).
-  try {
-    const user = await User.findById(userId).select('email name');
-    if (user?.email) {
-      await sendEmail(
-        user.email,
-        `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #4F46E5;">Wallet Top-up Successful</h2>
-            <p>Dear ${user.name || 'Customer'},</p>
-            <p>Your wallet has been topped up successfully.</p>
-            <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-              <tr><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold;">Paid</td><td style="padding:8px;border:1px solid #e5e7eb;">$${gross.toFixed(2)} USD</td></tr>
-              <tr><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold;">Fee</td><td style="padding:8px;border:1px solid #e5e7eb;">$${roundMoney(pendingTxn.feeUSD || 0).toFixed(2)} USD</td></tr>
-              <tr><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold;">Credited</td><td style="padding:8px;border:1px solid #e5e7eb;">$${netUSD.toFixed(2)} USD</td></tr>
-              <tr><td style="padding:8px;border:1px solid #e5e7eb;font-weight:bold;">New Balance</td><td style="padding:8px;border:1px solid #e5e7eb;">$${summaryBalances.balanceAfterAccount.toFixed(2)} USD</td></tr>
-            </table>
-            <p>Manage your wallet from <a href="${process.env.FRONTEND_URL}/my-account?tab=wallet">My Account → Wallet</a>.</p>
-            <p>Thank you for choosing BIT Software & IT Solution!</p>
-          </div>
-        `,
-        '✅ Wallet Top-up Successful — BIT Software',
-      );
-    }
-  } catch (emailErr) {
-    console.error('[Wallet] Top-up email failed:', emailErr);
-  }
+  await sendTopupSuccessEmail({
+    userId,
+    grossUSD: gross,
+    feeUSD: roundMoney(pendingTxn.feeUSD || 0),
+    netUSD,
+    paypalOrderId,
+    paypalCaptureId: captureId,
+    balanceAfterAccount: summaryBalances.balanceAfterAccount,
+    balanceAfterPromo: summaryBalances.balanceAfterPromo,
+  });
 
   return {
     alreadyProcessed: false,
@@ -870,12 +877,17 @@ export const requestWithdrawal = async (params: {
 
   validateWithdrawalDetails(params.method, params.details);
 
+  let balanceAfterAccount = 0;
+  let balanceAfterPromo = 0;
+
   const withdrawal = await runInSession(undefined, async (session) => {
     // Hold payout + fee — debit account balance now.
     const balances = await applyBalanceDelta(
       { userId: params.userId, accountDelta: -totalDebit },
       session,
     );
+    balanceAfterAccount = balances.balanceAfterAccount;
+    balanceAfterPromo = balances.balanceAfterPromo;
 
     const [created] = await Withdrawal.create(
       [
@@ -918,6 +930,20 @@ export const requestWithdrawal = async (params: {
     return created;
   });
 
+  // Customer confirmation (non-critical).
+  await sendWithdrawalRequestedEmail({
+    userId: params.userId,
+    withdrawalId: withdrawal._id.toString(),
+    payoutUSD: amount,
+    feeUSD,
+    feePercent,
+    totalDebitUSD: totalDebit,
+    method: params.method,
+    details: params.details,
+    balanceAfterAccount,
+    balanceAfterPromo,
+  });
+
   // Notify admin (non-critical).
   try {
     const adminEmail = process.env.ADMIN_EMAIL?.trim() || config.smtp_user;
@@ -931,6 +957,7 @@ export const requestWithdrawal = async (params: {
             <p>Fee (${feePercent}%): <strong>$${feeUSD} USD</strong></p>
             <p>Total held: <strong>$${totalDebit} USD</strong></p>
             <p>Method: ${params.method}</p>
+            <p>Request ID: ${withdrawal._id}</p>
             <p>Review it in the admin dashboard → Withdrawals.</p>
           </div>
         `,
@@ -1023,8 +1050,9 @@ export const grantCredit = async (params: {
   let granted = 0;
   for (const uid of userIds) {
     try {
+      let balances = { balanceAfterAccount: 0, balanceAfterPromo: 0 };
       await runInSession(undefined, async (session) => {
-        const balances = await applyBalanceDelta(
+        balances = await applyBalanceDelta(
           { userId: uid, promoDelta: amount },
           session,
         );
@@ -1044,6 +1072,13 @@ export const grantCredit = async (params: {
         );
       });
       granted += 1;
+      await sendGrantCreditEmail({
+        userId: uid,
+        amountUSD: amount,
+        note: params.note || 'Promotional credit granted.',
+        balanceAfterAccount: balances.balanceAfterAccount,
+        balanceAfterPromo: balances.balanceAfterPromo,
+      });
     } catch (err) {
       console.error(`[Wallet] grantCredit failed for user ${uid}:`, err);
     }
@@ -1068,7 +1103,7 @@ export const adjustBalance = async (params: {
     throw new AppError(httpStatus.BAD_REQUEST, 'Provide a non-zero adjustment.');
   }
 
-  return runInSession(undefined, async (session) => {
+  const result = await runInSession(undefined, async (session) => {
     const balances = await applyBalanceDelta(
       { userId: params.userId, accountDelta, promoDelta },
       session,
@@ -1090,6 +1125,18 @@ export const adjustBalance = async (params: {
     );
     return { balances, transactionId: txn._id.toString() };
   });
+
+  await sendBalanceAdjustmentEmail({
+    userId: params.userId,
+    accountDelta,
+    promoDelta,
+    note: params.note || 'Manual adjustment.',
+    balanceAfterAccount: result.balances.balanceAfterAccount,
+    balanceAfterPromo: result.balances.balanceAfterPromo,
+    transactionId: result.transactionId,
+  });
+
+  return result;
 };
 
 export const listWithdrawals = async (query: Record<string, unknown> = {}) => {
@@ -1128,7 +1175,7 @@ export const processWithdrawal = async (params: {
   adminNote?: string;
   adminId: string;
 }) => {
-  const withdrawal = await runInSession(undefined, async (session) => {
+  const processed = await runInSession(undefined, async (session) => {
     const claimed = await Withdrawal.findOneAndUpdate(
       { _id: params.withdrawalId, status: 'pending' },
       {
@@ -1157,72 +1204,77 @@ export const processWithdrawal = async (params: {
           { session },
         );
       }
-    } else {
-      // Reject → return held payout + fee in the same transaction as the status change.
-      const feeHeld = roundMoney(claimed.feeUSD || 0);
-      const refundTotal = addMoney(claimed.amountUSD, feeHeld);
-      const balances = await applyBalanceDelta(
-        { userId: claimed.userId.toString(), accountDelta: refundTotal },
-        session,
-      );
-      await recordTxn(
-        {
-          userId: claimed.userId.toString(),
-          type: 'withdrawal_reversal',
-          status: 'completed',
-          accountAmount: refundTotal,
-          grossUSD: refundTotal,
-          feeUSD: feeHeld,
-          netUSD: claimed.amountUSD,
-          balanceAfterAccount: balances.balanceAfterAccount,
-          balanceAfterPromo: balances.balanceAfterPromo,
-          reference: { kind: 'withdrawal', id: claimed._id.toString() },
-          note:
-            params.adminNote ||
-            (feeHeld > 0
-              ? `Withdrawal rejected — $${claimed.amountUSD} payout + $${feeHeld} fee returned.`
-              : 'Withdrawal rejected — funds returned.'),
-          createdBy: params.adminId,
-        },
-        session,
-      );
-      if (claimed.walletTransactionId) {
-        await WalletTransaction.updateOne(
-          { _id: claimed.walletTransactionId },
-          { $set: { status: 'cancelled', note: 'Withdrawal rejected.' } },
-          { session },
-        );
-      }
+      return { withdrawal: claimed, rejectBalances: null as null, refundedUSD: 0 };
     }
 
-    return claimed;
+    // Reject → return held payout + fee in the same transaction as the status change.
+    const feeHeld = roundMoney(claimed.feeUSD || 0);
+    const refundTotal = addMoney(claimed.amountUSD, feeHeld);
+    const balances = await applyBalanceDelta(
+      { userId: claimed.userId.toString(), accountDelta: refundTotal },
+      session,
+    );
+    await recordTxn(
+      {
+        userId: claimed.userId.toString(),
+        type: 'withdrawal_reversal',
+        status: 'completed',
+        accountAmount: refundTotal,
+        grossUSD: refundTotal,
+        feeUSD: feeHeld,
+        netUSD: claimed.amountUSD,
+        balanceAfterAccount: balances.balanceAfterAccount,
+        balanceAfterPromo: balances.balanceAfterPromo,
+        reference: { kind: 'withdrawal', id: claimed._id.toString() },
+        note:
+          params.adminNote ||
+          (feeHeld > 0
+            ? `Withdrawal rejected — $${claimed.amountUSD} payout + $${feeHeld} fee returned.`
+            : 'Withdrawal rejected — funds returned.'),
+        createdBy: params.adminId,
+      },
+      session,
+    );
+    if (claimed.walletTransactionId) {
+      await WalletTransaction.updateOne(
+        { _id: claimed.walletTransactionId },
+        { $set: { status: 'cancelled', note: 'Withdrawal rejected.' } },
+        { session },
+      );
+    }
+
+    return { withdrawal: claimed, rejectBalances: balances, refundedUSD: refundTotal };
   });
 
-  if (params.action === 'reject') {
-    // Notify customer of rejection + refund (non-critical).
-    try {
-      const user = await User.findById(withdrawal.userId).select('email name');
-      if (user?.email) {
-        await sendEmail(
-          user.email,
-          `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #EF4444;">Withdrawal Request Rejected</h2>
-              <p>Dear ${user.name || 'Customer'},</p>
-              <p>Your withdrawal request of <strong>$${withdrawal.amountUSD} USD</strong>${
-                Number(withdrawal.feeUSD) > 0
-                  ? ` (plus $${withdrawal.feeUSD} fee)`
-                  : ''
-              } was not approved${params.adminNote ? `: ${params.adminNote}` : '.'}</p>
-              <p>The held amount has been returned to your account balance.</p>
-            </div>
-          `,
-          '⚠️ Withdrawal Request Rejected — BIT Software',
-        );
-      }
-    } catch (err) {
-      console.error('[Wallet] Withdrawal rejection email failed:', err);
-    }
+  const { withdrawal, rejectBalances, refundedUSD } = processed;
+  const userId = withdrawal.userId.toString();
+
+  if (params.action === 'complete') {
+    await sendWithdrawalPaidEmail({
+      userId,
+      withdrawalId: withdrawal._id.toString(),
+      payoutUSD: withdrawal.amountUSD,
+      feeUSD: roundMoney(withdrawal.feeUSD || 0),
+      feePercent: withdrawal.feePercent,
+      method: withdrawal.method,
+      details: withdrawal.details || {},
+      payoutRef: params.payoutRef,
+      adminNote: params.adminNote,
+    });
+  } else if (rejectBalances) {
+    await sendWithdrawalRejectedEmail({
+      userId,
+      withdrawalId: withdrawal._id.toString(),
+      payoutUSD: withdrawal.amountUSD,
+      feeUSD: roundMoney(withdrawal.feeUSD || 0),
+      feePercent: withdrawal.feePercent,
+      refundedUSD,
+      method: withdrawal.method,
+      details: withdrawal.details || {},
+      adminNote: params.adminNote,
+      balanceAfterAccount: rejectBalances.balanceAfterAccount,
+      balanceAfterPromo: rejectBalances.balanceAfterPromo,
+    });
   }
 
   return Withdrawal.findById(withdrawal._id).lean();
