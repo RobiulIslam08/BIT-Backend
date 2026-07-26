@@ -19,7 +19,7 @@ export interface IUser {
   name: string;
   email: string;
   password: string;
-  // Public-facing 6-digit customer identity (random, e.g. "125425").
+  // Public-facing 4-digit customer identity (sequential, e.g. "5001").
   userCode?: string;
   role: UserRole;
   status: UserStatus;

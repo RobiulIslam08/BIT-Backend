@@ -47,8 +47,8 @@ const getAllUsersFromDB = async (
 };
 
 /**
- * Backfill unique 6-digit codes for any existing users created before the
- * userCode field existed. Idempotent — safe to run on every startup.
+ * Backfill sequential 4-digit codes (5001+) for any existing users created
+ * before the userCode field existed. Idempotent — safe to run on every startup.
  */
 const backfillUserCodes = async (): Promise<number> => {
   const usersWithoutCode = await User.find({

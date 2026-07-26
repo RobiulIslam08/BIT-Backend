@@ -76,7 +76,7 @@ async function main() {
       console.error('[Startup] Hosting plans seed failed (non-critical):', err);
     }
 
-    // Assign a unique 6-digit customer code to any legacy users missing one.
+    // Assign a unique sequential 4-digit customer code (5001+) to any legacy users missing one.
     try {
       await UserService.backfillUserCodes();
     } catch (err) {

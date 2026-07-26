@@ -27,8 +27,7 @@ const userSchema = new Schema<IUserDocument, IUserModel>(
         'Please provide a valid email address',
       ],
     },
-    // Public 6-digit customer identity (random, e.g. "125425"). Server-generated,
-    // never sequential — so it never reveals how many customers we actually have.
+    // Public 4-digit customer identity (sequential, starting at 5001 → 5002…).
     userCode: {
       type: String,
       unique: true,
@@ -165,7 +164,7 @@ userSchema.pre('save', async function (next) {
     }
   }
 
-  // Assign a unique random 6-digit customer code on first save.
+  // Assign the next sequential 4-digit customer code (5001+) on first save.
   if (this.isNew && !this.userCode) {
     try {
       this.userCode = await generateUniqueUserCode();
@@ -248,16 +247,44 @@ userSchema.statics.isJWTIssuedBeforePasswordChanged = function (
 // Create and export the User model
 export const User = model<IUserDocument, IUserModel>('User', userSchema);
 
+const USER_CODE_START = 5001;
+const USER_CODE_MAX = 9999;
+
 /**
- * Generate a random, unique 6-digit customer code in the range 100000–999999.
- * Random (not sequential) so the number never hints at how many customers exist.
- * Loops until an unused code is found; collisions are astronomically rare.
+ * Generate the next sequential 4-digit customer code starting from 5001.
+ * Finds the highest existing code in 5001–9999 (including soft-deleted users)
+ * and returns max+1.
  */
 export const generateUniqueUserCode = async (): Promise<string> => {
-  // Cap attempts defensively; in practice the first try almost always succeeds.
   for (let attempt = 0; attempt < 50; attempt++) {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const exists = await User.exists({ userCode: code });
+    // Use the raw collection so soft-deleted users' codes stay reserved.
+    const usersWithCodes = await User.collection
+      .find(
+        { userCode: { $exists: true, $nin: [null, ''] } },
+        { projection: { userCode: 1 } },
+      )
+      .toArray();
+
+    let maxCode = USER_CODE_START - 1;
+    for (const user of usersWithCodes) {
+      const n = Number.parseInt(String(user.userCode), 10);
+      if (
+        Number.isInteger(n) &&
+        n >= USER_CODE_START &&
+        n <= USER_CODE_MAX &&
+        String(n) === String(user.userCode).trim()
+      ) {
+        if (n > maxCode) maxCode = n;
+      }
+    }
+
+    const next = maxCode + 1;
+    if (next > USER_CODE_MAX) {
+      throw new Error('User code range exhausted (5001–9999).');
+    }
+
+    const code = String(next);
+    const exists = await User.collection.findOne({ userCode: code }, { projection: { _id: 1 } });
     if (!exists) return code;
   }
   throw new Error('Could not generate a unique user code after several attempts.');
