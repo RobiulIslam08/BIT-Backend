@@ -81,7 +81,9 @@ export interface IWithdrawalDetails {
 
 export interface IWithdrawal {
   userId: Types.ObjectId;
-  amountUSD: number; // whole USD only
+  amountUSD: number; // whole USD payout the customer receives
+  feeUSD?: number; // fee held in addition to the payout (0 for legacy rows)
+  feePercent?: number; // fee % used at request time
   method: TWithdrawalMethod;
   details: IWithdrawalDetails;
   status: TWithdrawalStatus;
@@ -98,6 +100,7 @@ export interface IWithdrawal {
 export interface IWalletSettings {
   key: string; // always 'default'
   topupFeePercent: number; // e.g. 5 → 5%
+  withdrawFeePercent: number; // e.g. 10 → 10% of payout
   minTopupUSD: number; // minimum top-up amount in USD
   updatedBy?: Types.ObjectId;
   createdAt?: Date;

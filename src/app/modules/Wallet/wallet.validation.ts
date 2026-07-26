@@ -57,6 +57,7 @@ const createWithdrawal = z.object({
 const updateSettings = z.object({
   body: z.object({
     topupFeePercent: z.coerce.number().min(0).max(100).optional(),
+    withdrawFeePercent: z.coerce.number().min(0).max(100).optional(),
     minTopupUSD: z.coerce.number().min(1, 'Minimum top-up must be at least $1').optional(),
   }),
 });

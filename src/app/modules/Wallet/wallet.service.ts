@@ -23,6 +23,7 @@ import {
   WalletSettings,
   WALLET_SETTINGS_KEY,
   DEFAULT_TOPUP_FEE_PERCENT,
+  DEFAULT_WITHDRAW_FEE_PERCENT,
   DEFAULT_MIN_TOPUP_USD,
 } from './walletSettings.model';
 import {
@@ -191,14 +192,26 @@ export const getSettings = async () => {
     settings = await WalletSettings.create({
       key: WALLET_SETTINGS_KEY,
       topupFeePercent: DEFAULT_TOPUP_FEE_PERCENT,
+      withdrawFeePercent: DEFAULT_WITHDRAW_FEE_PERCENT,
       minTopupUSD: DEFAULT_MIN_TOPUP_USD,
     });
+  } else if (
+    typeof settings.withdrawFeePercent !== 'number' ||
+    Number.isNaN(settings.withdrawFeePercent)
+  ) {
+    // Backfill for settings docs created before withdraw fees existed.
+    settings.withdrawFeePercent = DEFAULT_WITHDRAW_FEE_PERCENT;
+    await settings.save();
   }
   return settings;
 };
 
 export const updateSettings = async (
-  payload: { topupFeePercent?: number; minTopupUSD?: number },
+  payload: {
+    topupFeePercent?: number;
+    withdrawFeePercent?: number;
+    minTopupUSD?: number;
+  },
   adminId: string,
 ) => {
   const settings = await getSettings();
@@ -207,6 +220,15 @@ export const updateSettings = async (
       throw new AppError(httpStatus.BAD_REQUEST, 'Fee percent must be between 0 and 100.');
     }
     settings.topupFeePercent = payload.topupFeePercent;
+  }
+  if (typeof payload.withdrawFeePercent === 'number') {
+    if (payload.withdrawFeePercent < 0 || payload.withdrawFeePercent > 100) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Withdraw fee percent must be between 0 and 100.',
+      );
+    }
+    settings.withdrawFeePercent = payload.withdrawFeePercent;
   }
   if (typeof payload.minTopupUSD === 'number') {
     if (payload.minTopupUSD < DEFAULT_MIN_TOPUP_USD) {
@@ -237,6 +259,49 @@ export const computeTopupBreakdown = async (grossUSD: number) => {
   };
 };
 
+/** Fee charged on the payout amount the customer receives. */
+export const computeWithdrawalFee = (payoutUSD: number, feePercent: number) =>
+  roundMoney((roundMoney(payoutUSD) * feePercent) / 100);
+
+/**
+ * Largest whole-USD payout W such that W + fee(W) <= accountBalance.
+ * Fractional cents in the balance can help cover the fee but cannot be paid out.
+ */
+export const maxWithdrawablePayout = (
+  accountBalance: number,
+  feePercent: number,
+): number => {
+  const balance = roundMoney(accountBalance);
+  const whole = wholeUnits(balance);
+  if (whole < 1) return 0;
+
+  const canAfford = (payout: number) =>
+    gteMoney(balance, addMoney(payout, computeWithdrawalFee(payout, feePercent)));
+
+  let lo = 0;
+  let hi = whole;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi + 1) / 2);
+    if (canAfford(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+};
+
+export const computeWithdrawalBreakdown = async (payoutUSD: number) => {
+  const settings = await getSettings();
+  const payout = roundMoney(payoutUSD);
+  const feePercent = settings.withdrawFeePercent ?? DEFAULT_WITHDRAW_FEE_PERCENT;
+  const feeUSD = computeWithdrawalFee(payout, feePercent);
+  const totalDebitUSD = addMoney(payout, feeUSD);
+  return {
+    payoutUSD: payout,
+    feeUSD,
+    totalDebitUSD,
+    feePercent,
+  };
+};
+
 // ============================================
 // READ HELPERS
 // ============================================
@@ -250,13 +315,18 @@ export const getWalletSummary = async (userId: string) => {
   const promotionalCredit = roundMoney(user.promotionalCredit || 0);
   const settings = await getSettings();
 
+  const withdrawFeePercent =
+    settings.withdrawFeePercent ?? DEFAULT_WITHDRAW_FEE_PERCENT;
+
   return {
     accountBalance,
     promotionalCredit,
     totalBalance: addMoney(accountBalance, promotionalCredit),
-    withdrawableWholeUSD: wholeUnits(accountBalance), // only whole units are withdrawable
+    // Max whole-USD payout after applying the withdraw fee.
+    withdrawableWholeUSD: maxWithdrawablePayout(accountBalance, withdrawFeePercent),
     currency: 'USD',
-    feePercent: settings.topupFeePercent,
+    feePercent: settings.topupFeePercent, // top-up fee (kept for TopupModal)
+    withdrawFeePercent,
     minTopupUSD: settings.minTopupUSD,
   };
 };
@@ -782,21 +852,28 @@ export const requestWithdrawal = async (params: {
   const user = await User.findById(params.userId).select('accountBalance');
   if (!user) throw new AppError(httpStatus.NOT_FOUND, 'User not found.');
 
+  const settings = await getSettings();
+  const feePercent = settings.withdrawFeePercent ?? DEFAULT_WITHDRAW_FEE_PERCENT;
+  const feeUSD = computeWithdrawalFee(amount, feePercent);
+  const totalDebit = addMoney(amount, feeUSD);
+
   const account = roundMoney(user.accountBalance || 0);
-  const maxWithdrawable = wholeUnits(account);
+  const maxWithdrawable = maxWithdrawablePayout(account, feePercent);
   if (amount > maxWithdrawable) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      `You can withdraw at most $${maxWithdrawable} (fractional cents are not withdrawable).`,
+      maxWithdrawable < 1
+        ? 'Insufficient balance to withdraw (including the withdrawal fee).'
+        : `You can withdraw at most $${maxWithdrawable} after the ${feePercent}% withdrawal fee.`,
     );
   }
 
   validateWithdrawalDetails(params.method, params.details);
 
   const withdrawal = await runInSession(undefined, async (session) => {
-    // Hold the funds — debit account balance now.
+    // Hold payout + fee — debit account balance now.
     const balances = await applyBalanceDelta(
-      { userId: params.userId, accountDelta: -amount },
+      { userId: params.userId, accountDelta: -totalDebit },
       session,
     );
 
@@ -805,6 +882,8 @@ export const requestWithdrawal = async (params: {
         {
           userId: new mongoose.Types.ObjectId(params.userId),
           amountUSD: amount,
+          feeUSD,
+          feePercent,
           method: params.method,
           details: params.details,
           status: 'pending',
@@ -818,11 +897,17 @@ export const requestWithdrawal = async (params: {
         userId: params.userId,
         type: 'withdrawal',
         status: 'pending',
-        accountAmount: -amount,
+        accountAmount: -totalDebit,
+        grossUSD: totalDebit,
+        feeUSD,
+        netUSD: amount,
         balanceAfterAccount: balances.balanceAfterAccount,
         balanceAfterPromo: balances.balanceAfterPromo,
         reference: { kind: 'withdrawal', id: created._id.toString() },
-        note: `Withdrawal request via ${params.method}.`,
+        note:
+          feeUSD > 0
+            ? `Withdrawal request via ${params.method}: $${amount} payout + $${feeUSD} fee (${feePercent}%).`
+            : `Withdrawal request via ${params.method}.`,
       },
       session,
     );
@@ -842,7 +927,9 @@ export const requestWithdrawal = async (params: {
         `
           <div style="font-family: Arial, sans-serif;">
             <h3>New Withdrawal Request</h3>
-            <p>Amount: <strong>$${amount} USD</strong></p>
+            <p>Payout: <strong>$${amount} USD</strong></p>
+            <p>Fee (${feePercent}%): <strong>$${feeUSD} USD</strong></p>
+            <p>Total held: <strong>$${totalDebit} USD</strong></p>
             <p>Method: ${params.method}</p>
             <p>Review it in the admin dashboard → Withdrawals.</p>
           </div>
@@ -1071,9 +1158,11 @@ export const processWithdrawal = async (params: {
         );
       }
     } else {
-      // Reject → return the held funds in the same transaction as the status change.
+      // Reject → return held payout + fee in the same transaction as the status change.
+      const feeHeld = roundMoney(claimed.feeUSD || 0);
+      const refundTotal = addMoney(claimed.amountUSD, feeHeld);
       const balances = await applyBalanceDelta(
-        { userId: claimed.userId.toString(), accountDelta: claimed.amountUSD },
+        { userId: claimed.userId.toString(), accountDelta: refundTotal },
         session,
       );
       await recordTxn(
@@ -1081,11 +1170,18 @@ export const processWithdrawal = async (params: {
           userId: claimed.userId.toString(),
           type: 'withdrawal_reversal',
           status: 'completed',
-          accountAmount: claimed.amountUSD,
+          accountAmount: refundTotal,
+          grossUSD: refundTotal,
+          feeUSD: feeHeld,
+          netUSD: claimed.amountUSD,
           balanceAfterAccount: balances.balanceAfterAccount,
           balanceAfterPromo: balances.balanceAfterPromo,
           reference: { kind: 'withdrawal', id: claimed._id.toString() },
-          note: params.adminNote || 'Withdrawal rejected — funds returned.',
+          note:
+            params.adminNote ||
+            (feeHeld > 0
+              ? `Withdrawal rejected — $${claimed.amountUSD} payout + $${feeHeld} fee returned.`
+              : 'Withdrawal rejected — funds returned.'),
           createdBy: params.adminId,
         },
         session,
@@ -1113,8 +1209,12 @@ export const processWithdrawal = async (params: {
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
               <h2 style="color: #EF4444;">Withdrawal Request Rejected</h2>
               <p>Dear ${user.name || 'Customer'},</p>
-              <p>Your withdrawal request of <strong>$${withdrawal.amountUSD} USD</strong> was not approved${params.adminNote ? `: ${params.adminNote}` : '.'}</p>
-              <p>The amount has been returned to your account balance.</p>
+              <p>Your withdrawal request of <strong>$${withdrawal.amountUSD} USD</strong>${
+                Number(withdrawal.feeUSD) > 0
+                  ? ` (plus $${withdrawal.feeUSD} fee)`
+                  : ''
+              } was not approved${params.adminNote ? `: ${params.adminNote}` : '.'}</p>
+              <p>The held amount has been returned to your account balance.</p>
             </div>
           `,
           '⚠️ Withdrawal Request Rejected — BIT Software',

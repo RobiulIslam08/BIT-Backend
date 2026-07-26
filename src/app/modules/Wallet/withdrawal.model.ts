@@ -17,6 +17,8 @@ const WithdrawalSchema = new Schema<IWithdrawal>(
       index: true,
     },
     amountUSD: { type: Number, required: true, min: 1 },
+    feeUSD: { type: Number, required: true, min: 0, default: 0 },
+    feePercent: { type: Number, required: true, min: 0, max: 100, default: 0 },
     method: {
       type: String,
       enum: ['bank', 'bkash', 'nagad', 'paypal'],

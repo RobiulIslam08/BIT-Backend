@@ -8,6 +8,7 @@ import { IWalletSettings } from './wallet.interface';
 
 export const WALLET_SETTINGS_KEY = 'default';
 export const DEFAULT_TOPUP_FEE_PERCENT = 5;
+export const DEFAULT_WITHDRAW_FEE_PERCENT = 10;
 export const DEFAULT_MIN_TOPUP_USD = 1;
 
 const WalletSettingsSchema = new Schema<IWalletSettings>(
@@ -23,6 +24,14 @@ const WalletSettingsSchema = new Schema<IWalletSettings>(
       type: Number,
       required: true,
       default: DEFAULT_TOPUP_FEE_PERCENT,
+      min: 0,
+      max: 100,
+    },
+    // Percentage fee charged on each withdrawal payout (customer bears it). e.g. 10 = 10%.
+    withdrawFeePercent: {
+      type: Number,
+      required: true,
+      default: DEFAULT_WITHDRAW_FEE_PERCENT,
       min: 0,
       max: 100,
     },
