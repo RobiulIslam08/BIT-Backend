@@ -26,6 +26,7 @@ import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
 import { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
 import { WalletService } from '../Wallet/wallet.service';
+import { getNamecheapClientIp } from '../../utils/namecheap';
 
 // Re-export for any legacy imports that expected it from this module.
 export { getDomainPriceUSD } from '../DomainPricing/domainPricing.service';
@@ -110,6 +111,72 @@ const generateOrderId = async (): Promise<string> => {
   return id;
 };
 
+// Namecheap requires +NNN.NNNNNNNNNN (country code, literal dot, subscriber digits).
+const NAMECHEAP_PHONE_RE = /^\+\d{1,3}\.\d{6,14}$/;
+const NAMECHEAP_COUNTRY_CODES = [
+  '880', '966', '971', '974', '973', '968', '965', '961', '970',
+  '92', '91', '90', '86', '81', '61', '44', '33', '49', '39', '34', '7', '1',
+];
+
+const maskNamecheapPhone = (phone: string): string => {
+  const [cc, num] = phone.split('.');
+  if (!cc || !num) return '***';
+  if (num.length <= 4) return `${cc}.***`;
+  return `${cc}.***${num.slice(-4)}`;
+};
+
+/** Normalize common phone inputs to Namecheap's +CCC.NNNNNNNN format. */
+export const normalizeNamecheapPhone = (raw: string | undefined | null): string | null => {
+  if (!raw?.trim()) return null;
+
+  let s = raw.trim().replace(/[\s\-()]/g, '');
+  if (NAMECHEAP_PHONE_RE.test(s)) return s;
+
+  if (/^\d{7,18}$/.test(s)) s = `+${s}`;
+
+  if (/^\+\d{7,18}$/.test(s)) {
+    const digits = s.slice(1);
+    for (const code of NAMECHEAP_COUNTRY_CODES) {
+      if (digits.startsWith(code) && digits.length - code.length >= 6) {
+        const normalized = `+${code}.${digits.slice(code.length)}`;
+        if (NAMECHEAP_PHONE_RE.test(normalized)) return normalized;
+      }
+    }
+    for (const len of [3, 2, 1]) {
+      if (digits.length - len >= 6) {
+        const normalized = `+${digits.slice(0, len)}.${digits.slice(len)}`;
+        if (NAMECHEAP_PHONE_RE.test(normalized)) return normalized;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveRegistrantPhone = (): string => {
+  const raw = process.env.NC_REG_PHONE?.trim();
+  if (!raw) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'NC_REG_PHONE is not configured. Set it in .env / Dokploy as +CCC.NNNNNNNN (e.g. +966.501234567).',
+    );
+  }
+  if (/[xX*]/.test(raw) || /placeholder/i.test(raw)) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'NC_REG_PHONE still has a placeholder value. Set a real phone like +966.501234567 (dot required).',
+    );
+  }
+  const normalized = normalizeNamecheapPhone(raw);
+  if (!normalized) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      `Namecheap registrant phone is invalid. Set NC_REG_PHONE as +CCC.NNNNNNNN (e.g. +966.501234567). Received: "${raw}"`,
+    );
+  }
+  return normalized;
+};
+
 // ─── Namecheap Domain Registration ───
 export const registerDomainOnNamecheap = async (
   domainName: string,
@@ -117,7 +184,6 @@ export const registerDomainOnNamecheap = async (
 ): Promise<{ namecheapOrderId: string; registeredAt: Date; expiresAt: Date }> => {
   const apiKey = process.env.NAMECHEAP_API_KEY?.trim();
   const apiUser = process.env.NAMECHEAP_API_USER?.trim();
-  const clientIp = process.env.NAMECHEAP_CLIENT_IP?.trim() || '127.0.0.1';
   const env = process.env.NAMECHEAP_ENV || 'production';
   const apiUrl = env === 'sandbox'
     ? 'https://api.sandbox.namecheap.com/xml.response'
@@ -127,16 +193,31 @@ export const registerDomainOnNamecheap = async (
     throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Namecheap API not configured.');
   }
 
+  const phone = resolveRegistrantPhone();
+  let clientIp: string;
+  try {
+    clientIp = await getNamecheapClientIp();
+  } catch {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Could not determine server public IP. Set NAMECHEAP_CLIENT_IP in .env and whitelist it in Namecheap API Access.',
+    );
+  }
+  console.log(
+    `[Namecheap] Registering ${domainName} with ClientIP ${clientIp}, RegistrantPhone ${maskNamecheapPhone(phone)}`,
+  );
+
   // Registrant contact info from .env (your company info)
   const reg = {
     FirstName: process.env.NC_REG_FIRSTNAME || 'Admin',
     LastName: process.env.NC_REG_LASTNAME || 'BIT',
+    Organization: process.env.NC_REG_ORGANIZATION || '',
     Address1: process.env.NC_REG_ADDRESS || 'Riyadh',
     City: process.env.NC_REG_CITY || 'Riyadh',
     StateProvince: process.env.NC_REG_STATE || 'Riyadh',
     PostalCode: process.env.NC_REG_ZIP || '11564',
     Country: process.env.NC_REG_COUNTRY || 'SA',
-    Phone: process.env.NC_REG_PHONE || '+966.500000000',
+    Phone: phone,
     EmailAddress: process.env.NC_REG_EMAIL || 'admin@bitsoftware.sa',
   };
 
@@ -151,6 +232,7 @@ export const registerDomainOnNamecheap = async (
     // Registrant
     RegistrantFirstName: reg.FirstName,
     RegistrantLastName: reg.LastName,
+    RegistrantOrganizationName: reg.Organization,
     RegistrantAddress1: reg.Address1,
     RegistrantCity: reg.City,
     RegistrantStateProvince: reg.StateProvince,
@@ -161,6 +243,7 @@ export const registerDomainOnNamecheap = async (
     // Tech (same)
     TechFirstName: reg.FirstName,
     TechLastName: reg.LastName,
+    TechOrganizationName: reg.Organization,
     TechAddress1: reg.Address1,
     TechCity: reg.City,
     TechStateProvince: reg.StateProvince,
@@ -171,6 +254,7 @@ export const registerDomainOnNamecheap = async (
     // Admin (same)
     AdminFirstName: reg.FirstName,
     AdminLastName: reg.LastName,
+    AdminOrganizationName: reg.Organization,
     AdminAddress1: reg.Address1,
     AdminCity: reg.City,
     AdminStateProvince: reg.StateProvince,
@@ -181,6 +265,7 @@ export const registerDomainOnNamecheap = async (
     // AuxBilling (same)
     AuxBillingFirstName: reg.FirstName,
     AuxBillingLastName: reg.LastName,
+    AuxBillingOrganizationName: reg.Organization,
     AuxBillingAddress1: reg.Address1,
     AuxBillingCity: reg.City,
     AuxBillingStateProvince: reg.StateProvince,
@@ -786,11 +871,12 @@ export const payForDomainWithWallet = async (payload: {
       },
     );
 
+    const reason = registrationError || 'Unknown registration error';
     throw new AppError(
       httpStatus.BAD_GATEWAY,
       refunded
-        ? `Domain registration failed. Your wallet has been refunded $${sellPriceUSD.toFixed(2)}. Order ID: ${orderId}`
-        : `Domain registration failed. Order ID: ${orderId}. If your wallet was charged, our team will refund it shortly.`,
+        ? `Domain registration failed: ${reason}. Your wallet has been refunded $${sellPriceUSD.toFixed(2)}. Order ID: ${orderId}`
+        : `Domain registration failed: ${reason}. Order ID: ${orderId}. If your wallet was charged, our team will refund it shortly.`,
     );
   }
 

@@ -1015,9 +1015,15 @@ export const payCartWithWallet = async (payload: {
 
   // If everything failed after wallet debit, surface an error for the UI
   if (summary.status === 'failed') {
+    const reasons = refundedResults
+      .filter((r) => r.status === 'failed' && r.failureReason)
+      .map((r) => `${r.label}: ${r.failureReason}`)
+      .join(' | ');
     throw new AppError(
       httpStatus.BAD_GATEWAY,
-      'Cart fulfillment failed. Failed items were refunded to your wallet where possible.',
+      reasons
+        ? `Cart fulfillment failed. ${reasons}. Failed items were refunded to your wallet where possible.`
+        : 'Cart fulfillment failed. Failed items were refunded to your wallet where possible.',
     );
   }
 

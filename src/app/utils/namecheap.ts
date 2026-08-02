@@ -40,7 +40,8 @@ let cachedIp: string | null = null;
 let cachedIpAt = 0;
 const IP_CACHE_MS = 10 * 60 * 1000;
 
-const getClientIp = async (): Promise<string> => {
+/** Configured NAMECHEAP_CLIENT_IP, or auto-detected public IPv4 (must be Namecheap-whitelisted). */
+export const getNamecheapClientIp = async (): Promise<string> => {
   const configured = process.env.NAMECHEAP_CLIENT_IP?.trim();
   if (configured && configured !== '' && configured !== 'YOUR_SERVER_PUBLIC_IP_HERE') {
     return configured;
@@ -56,6 +57,7 @@ const getClientIp = async (): Promise<string> => {
       if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
         cachedIp = ip;
         cachedIpAt = now;
+        console.log(`[Namecheap] Auto-detected public IP: ${ip}`);
         return ip;
       }
     } catch {
@@ -64,6 +66,9 @@ const getClientIp = async (): Promise<string> => {
   }
   throw new Error('Unable to determine server IP for registrar API.');
 };
+
+/** @deprecated use getNamecheapClientIp */
+const getClientIp = getNamecheapClientIp;
 
 // ─── XML parse + error extraction ───
 const parseXml = async (xml: string): Promise<any> => {
