@@ -37,6 +37,7 @@ const getAllDomains = catchAsync(async (req, res) => {
       limit: result.meta.limit,
       total: result.meta.total,
       totalPage: result.meta.totalPages,
+      totalRenewPriceUSD: result.meta.totalRenewPriceUSD,
     },
     data: result.domains,
   });

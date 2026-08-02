@@ -367,7 +367,7 @@ export const getAllHostings = async (query: Record<string, unknown>) => {
     ];
   }
 
-  const [hostings, total] = await Promise.all([
+  const [hostings, total, renewAgg] = await Promise.all([
     Hosting.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -376,11 +376,23 @@ export const getAllHostings = async (query: Record<string, unknown>) => {
       .populate('assignedBy', 'name email')
       .lean(),
     Hosting.countDocuments(filter),
+    Hosting.aggregate([
+      { $match: filter },
+      { $group: { _id: null, totalRenewPriceUSD: { $sum: { $ifNull: ['$renewPriceUSD', 0] } } } },
+    ]),
   ]);
+
+  const totalRenewPriceUSD = renewAgg[0]?.totalRenewPriceUSD ?? 0;
 
   return {
     hostings: hostings.map((h) => toAdminHosting(h)),
-    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      totalRenewPriceUSD,
+    },
   };
 };
 

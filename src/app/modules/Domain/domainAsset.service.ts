@@ -162,11 +162,18 @@ export const getAllDomains = async (query: Record<string, unknown>) => {
   if (query.autoRenew !== undefined && query.autoRenew !== '') {
     filter.autoRenew = query.autoRenew === 'true' || query.autoRenew === true;
   }
+  if (query.registrar) {
+    const registrar = String(query.registrar).trim();
+    if (registrar) {
+      // Case-insensitive exact match (e.g. BIT / bit / Bit)
+      filter.registrar = { $regex: `^${registrar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+    }
+  }
   if (query.search) {
     filter.domainName = { $regex: String(query.search).trim().toLowerCase(), $options: 'i' };
   }
 
-  const [domains, total] = await Promise.all([
+  const [domains, total, renewAgg] = await Promise.all([
     Domain.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -175,11 +182,23 @@ export const getAllDomains = async (query: Record<string, unknown>) => {
       .populate('assignedBy', 'name email')
       .lean(),
     Domain.countDocuments(filter),
+    Domain.aggregate([
+      { $match: filter },
+      { $group: { _id: null, totalRenewPriceUSD: { $sum: { $ifNull: ['$renewPriceUSD', 0] } } } },
+    ]),
   ]);
+
+  const totalRenewPriceUSD = renewAgg[0]?.totalRenewPriceUSD ?? 0;
 
   return {
     domains,
-    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      totalRenewPriceUSD,
+    },
   };
 };
 
