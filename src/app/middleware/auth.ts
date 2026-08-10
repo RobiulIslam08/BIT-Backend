@@ -71,4 +71,45 @@ const auth = (...requiredRoles: TUserRole[]) => {
     next();
   });
 };
+
+/**
+ * Optional auth — attaches req.user when a valid Bearer token is present.
+ * Does NOT fail when token is missing/invalid (for public routes that still
+ * want to link a logged-in user, e.g. GMB order submit).
+ */
+export const optionalAuth = catchAsync(async (req: Request, _res: Response, next: NextFunction) => {
+  let token = req.headers.authorization;
+  if (!token) return next();
+
+  try {
+    if (token.startsWith('Bearer ')) {
+      token = token.split(' ')[1];
+    }
+
+    const decoded = jwt.verify(
+      token,
+      config.jwt_access_secret as string,
+    ) as JwtPayload;
+
+    const { role, userId, iat } = decoded;
+    const user = await User.findById(userId);
+    if (!user || user.isDeleted || user.status === 'blocked') return next();
+
+    if (
+      user.passwordChangedAt &&
+      User.isJWTIssuedBeforePasswordChanged(user.passwordChangedAt, iat as number)
+    ) {
+      return next();
+    }
+
+    if (role) {
+      req.user = decoded as JwtPayload & { role: string };
+    }
+  } catch {
+    // Ignore invalid tokens on optional auth
+  }
+
+  next();
+});
+
 export default auth;

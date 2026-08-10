@@ -6,7 +6,7 @@ import express from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { GmbOrderControllers } from './gmbOrder.controller';
-import auth from '../../middleware/auth';
+import auth, { optionalAuth } from '../../middleware/auth';
 
 const router = express.Router();
 
@@ -78,8 +78,8 @@ const handleUpload = (req: express.Request, res: express.Response, next: express
 
 // ==================== PUBLIC ROUTES ====================
 
-// Submit a new GMB order (rate limited)
-router.post('/', orderRateLimit, handleUpload, GmbOrderControllers.submitOrder);
+// Submit a new GMB order (rate limited; optionalAuth links logged-in users)
+router.post('/', orderRateLimit, optionalAuth, handleUpload, GmbOrderControllers.submitOrder);
 
 // Create PayPal order server-side (returns PayPal order ID for frontend SDK)
 // Must be defined BEFORE the /:id route to avoid conflicts

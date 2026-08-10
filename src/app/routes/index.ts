@@ -4,6 +4,7 @@ import express from "express"
 import { AuthRoutes } from "../modules/Auth/auth.routes"
 import { UserRoutes } from "../modules/User/user.routes"
 import { GmbOrderRoutes } from "../modules/GmbOrder/gmbOrder.routes"
+import { GmbProfileRoutes } from "../modules/GmbProfile/gmbProfile.routes"
 import { DomainRoutes } from "../modules/Domain/domain.routes"
 import { DomainOrderRoutes } from "../modules/DomainOrder/domainOrder.routes"
 import { DomainAssetRoutes } from "../modules/Domain/domainAsset.routes"
@@ -30,6 +31,10 @@ const moduleRoute = [
     {
     path: '/gmb-orders',
     route: GmbOrderRoutes,
+  },
+    {
+    path: '/gmb-profiles',
+    route: GmbProfileRoutes,
   },
     {
     path: '/domain',

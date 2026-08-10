@@ -17,6 +17,30 @@ import { sendEmail } from '../../utils/sendEmail';
 import config from '../../config';
 import { WalletService } from '../Wallet/wallet.service';
 import { roundMoney } from '../../utils/money';
+import {
+  createFromOrder as provisionGmbProfile,
+  syncFromOrder as syncGmbProfileFromOrder,
+  normalizeBusinessHours,
+} from '../GmbProfile/gmbProfile.service';
+
+/** Best-effort profile provision — never fails the order. */
+const tryProvisionProfile = async (order: any) => {
+  if (!order?.userId) return order;
+  try {
+    const profile = await provisionGmbProfile(order);
+    if (profile && (profile as any)._id && !order.gmbProfileId) {
+      const updated = await GmbOrder.findByIdAndUpdate(
+        order._id,
+        { $set: { gmbProfileId: (profile as any)._id } },
+        { new: true },
+      );
+      return updated || order;
+    }
+  } catch (err) {
+    console.error('[GmbOrder] Profile provision failed for order', order?._id, err);
+  }
+  return order;
+};
 
 // GMB prices are quoted in SAR. PayPal/wallet charge in USD at this fixed rate.
 const SAR_TO_USD_RATE = 3.75;
@@ -223,6 +247,23 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   if (typeof orderData.discountAmount === 'string') {
     orderData.discountAmount = parseFloat(orderData.discountAmount as string);
   }
+  if (typeof orderData.latitude === 'string' && orderData.latitude !== '') {
+    orderData.latitude = parseFloat(orderData.latitude as string);
+  }
+  if (typeof orderData.longitude === 'string' && orderData.longitude !== '') {
+    orderData.longitude = parseFloat(orderData.longitude as string);
+  }
+
+  // Business hours (JSON string from FormData or plain object)
+  const normalizedHours = normalizeBusinessHours(orderData.businessHours);
+  if (normalizedHours) {
+    orderData.businessHours = normalizedHours;
+  } else {
+    delete (orderData as any).businessHours;
+  }
+
+  // Never trust client-sent profile linkage
+  delete (orderData as any).gmbProfileId;
 
   // ─── Wallet Payment (logged-in customers only — via /pay-with-wallet) ───
   if (orderData.paymentMethod === 'wallet') {
@@ -304,7 +345,7 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
       `Business: ${savedWalletOrder.businessName}<br/>Amount: ${savedWalletOrder.finalAmount} SAR (wallet)<br/>Order ID: #${savedWalletOrder.orderId}`,
     );
     await notifyCustomer(savedWalletOrder);
-    return savedWalletOrder;
+    return tryProvisionProfile(savedWalletOrder);
   }
 
   if (orderData.paymentMethod === 'paypal') {
@@ -400,11 +441,21 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   delete (orderData as any).__v;
   delete (orderData as any)._id;
 
+  // Normalize userId if present (optionalAuth / client must not invent invalid ids)
+  if (orderData.userId) {
+    const uid = String(orderData.userId);
+    if (mongoose.Types.ObjectId.isValid(uid)) {
+      orderData.userId = new mongoose.Types.ObjectId(uid) as any;
+    } else {
+      delete (orderData as any).userId;
+    }
+  }
+
   // Generate 6-digit unique order ID
   orderData.orderId = await generateUniqueOrderId();
 
   // ─── Save to MongoDB (direct create — no session needed for single document) ───
-  const savedOrder = await GmbOrder.create(orderData);
+  let savedOrder = await GmbOrder.create(orderData);
 
   // ─── Post-save: Send admin email notification ───
   const emailBody = `
@@ -421,6 +472,7 @@ const submitGmbOrder = async (orderData: Partial<IGmbOrder> & Record<string, unk
   // Send customer order confirmation email
   await notifyCustomer(savedOrder);
 
+  savedOrder = await tryProvisionProfile(savedOrder);
   return savedOrder;
 };
 
@@ -498,18 +550,24 @@ const getAllOrders = async (filters: Record<string, unknown> = {}) => {
 };
 
 // ==================== UPDATE ORDER STATUS (Admin only) ====================
-const updateOrderStatus = async (orderId: string, updateData: Partial<IGmbOrder>) => {
+const updateOrderStatus = async (orderId: string, updateData: Partial<IGmbOrder> & { userId?: string }) => {
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID format.');
   }
 
   // Whitelist allowed update fields (admin cannot change payment amounts)
-  const allowedUpdates: Array<keyof IGmbOrder> = ['orderStatus', 'paymentStatus'];
-  const safeUpdate: Partial<IGmbOrder> = {};
+  const allowedUpdates: Array<keyof IGmbOrder | 'userId'> = ['orderStatus', 'paymentStatus', 'userId'];
+  const safeUpdate: Record<string, unknown> = {};
   for (const key of allowedUpdates) {
-    if (key in updateData) {
-      (safeUpdate as any)[key] = updateData[key];
+    if (!(key in updateData)) continue;
+    if (key === 'userId') {
+      const uid = (updateData as any).userId;
+      if (uid && mongoose.Types.ObjectId.isValid(String(uid))) {
+        safeUpdate.userId = new mongoose.Types.ObjectId(String(uid));
+      }
+      continue;
     }
+    safeUpdate[key] = (updateData as any)[key];
   }
 
   if (Object.keys(safeUpdate).length === 0) {
@@ -524,26 +582,47 @@ const updateOrderStatus = async (orderId: string, updateData: Partial<IGmbOrder>
 
   if (!order) {
     throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+  }
+
+  try {
+    await syncGmbProfileFromOrder(order.toObject());
+  } catch (err) {
+    console.error('[GmbOrder] Profile sync failed after status update', orderId, err);
   }
 
   return order;
 };
 
 // ==================== UPDATE ORDER INFO (Admin only) ====================
-const updateOrderInfo = async (orderId: string, updateData: Partial<IGmbOrder>) => {
+const updateOrderInfo = async (orderId: string, updateData: Partial<IGmbOrder> & { userId?: string }) => {
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID format.');
   }
 
   // Whitelist allowed update fields
-  const allowedUpdates: Array<keyof IGmbOrder> = [
-    'businessName', 'email', 'phone', 'category', 'serviceType', 'finalAmount', 'orderStatus', 'paymentStatus'
+  const allowedUpdates: Array<keyof IGmbOrder | 'userId'> = [
+    'businessName', 'email', 'phone', 'category', 'serviceType', 'finalAmount',
+    'orderStatus', 'paymentStatus', 'userId', 'businessHours',
+    'streetAddress', 'city', 'state', 'postalCode', 'country',
+    'latitude', 'longitude', 'serviceAreas', 'website', 'description', 'servicesList',
+    'whatsapp',
   ];
-  const safeUpdate: Partial<IGmbOrder> = {};
+  const safeUpdate: Record<string, unknown> = {};
   for (const key of allowedUpdates) {
-    if (key in updateData) {
-      (safeUpdate as any)[key] = updateData[key];
+    if (!(key in updateData)) continue;
+    if (key === 'userId') {
+      const uid = (updateData as any).userId;
+      if (uid && mongoose.Types.ObjectId.isValid(String(uid))) {
+        safeUpdate.userId = new mongoose.Types.ObjectId(String(uid));
+      }
+      continue;
     }
+    if (key === 'businessHours') {
+      const hours = normalizeBusinessHours((updateData as any).businessHours);
+      if (hours) safeUpdate.businessHours = hours;
+      continue;
+    }
+    safeUpdate[key] = (updateData as any)[key];
   }
 
   if (Object.keys(safeUpdate).length === 0) {
@@ -558,6 +637,12 @@ const updateOrderInfo = async (orderId: string, updateData: Partial<IGmbOrder>) 
 
   if (!order) {
     throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+  }
+
+  try {
+    await syncGmbProfileFromOrder(order.toObject());
+  } catch (err) {
+    console.error('[GmbOrder] Profile sync failed after info update', orderId, err);
   }
 
   return order;

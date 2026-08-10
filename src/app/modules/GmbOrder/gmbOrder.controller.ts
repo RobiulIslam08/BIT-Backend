@@ -9,7 +9,7 @@ import { GmbOrderServices } from './gmbOrder.service';
 
 // ==================== SUBMIT ORDER ====================
 const submitOrder = catchAsync(async (req, res) => {
-  const orderData = req.body;
+  const orderData = { ...req.body };
 
   // Wallet payments must go through the authenticated /pay-with-wallet route.
   // Never accept paymentMethod=wallet on the public submit endpoint.
@@ -18,6 +18,12 @@ const submitOrder = catchAsync(async (req, res) => {
       success: false,
       message: 'Please use the wallet checkout endpoint while logged in.',
     });
+  }
+
+  // Link logged-in customer (optionalAuth) — ignore any client-sent userId
+  delete orderData.userId;
+  if (req.user?.userId) {
+    orderData.userId = req.user.userId;
   }
 
   // If a payment screenshot was uploaded via multer memoryStorage,

@@ -5,11 +5,22 @@
 import { Schema, model } from 'mongoose';
 import { IGmbOrder } from './gmbOrder.interface';
 
+const DayHoursSchema = new Schema(
+  {
+    active: { type: Boolean, default: false },
+    open: { type: String, trim: true, maxlength: 10, default: '09:00' },
+    close: { type: String, trim: true, maxlength: 10, default: '18:00' },
+  },
+  { _id: false },
+);
+
 const GmbOrderSchema = new Schema<IGmbOrder>(
   {
     orderId: { type: String, unique: true, sparse: true, trim: true },
-    // Owning user (set when paid from a logged-in customer's wallet)
+    // Owning user (set when logged-in customer places order)
     userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
+    // Linked owned profile (provisioned for My Account)
+    gmbProfileId: { type: Schema.Types.ObjectId, ref: 'GmbProfile', index: true, sparse: true },
     // ─── Business Info ───
     businessName: { type: String, required: true, trim: true, maxlength: 200 },
     category: { type: String, required: true, trim: true, maxlength: 200 },
@@ -39,6 +50,7 @@ const GmbOrderSchema = new Schema<IGmbOrder>(
     // ─── Business Details ───
     description: { type: String, trim: true, maxlength: 5000 },
     servicesList: { type: String, trim: true, maxlength: 5000 },
+    businessHours: { type: Map, of: DayHoursSchema },
 
     // ─── Service & Pricing ───
     serviceType: {

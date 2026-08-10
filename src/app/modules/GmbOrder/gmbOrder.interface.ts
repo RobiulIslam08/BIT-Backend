@@ -16,10 +16,20 @@ export interface ITransactionDetails {
   paymentDate?: string;
 }
 
+export interface IBusinessDayHours {
+  active: boolean;
+  open: string;
+  close: string;
+}
+
+export type TBusinessHours = Record<string, IBusinessDayHours>;
+
 export interface IGmbOrder {
   orderId?: string;
-  // Optional owning user (set when paid from a logged-in customer's wallet)
+  // Optional owning user (set when logged-in customer places order)
   userId?: Types.ObjectId;
+  // Linked owned profile asset (set when profile is provisioned)
+  gmbProfileId?: Types.ObjectId;
   // Business info
   businessName: string;
   category: string;
@@ -42,6 +52,7 @@ export interface IGmbOrder {
   // Business details
   description?: string;
   servicesList?: string;
+  businessHours?: TBusinessHours;
 
   // Service & pricing
   serviceType: TServiceType;
