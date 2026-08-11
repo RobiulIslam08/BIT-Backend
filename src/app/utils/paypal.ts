@@ -86,12 +86,12 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
  * Create a PayPal order server-side (server-to-server).
  * @param amountUSD - Amount in USD
  * @param description - Order description shown to buyer
- * @param serviceType - 'gmb' | 'domain' | 'hosting' — for correct return URLs
+ * @param serviceType - 'gmb' | 'domain' | 'hosting' | 'digital_service' — for correct return URLs
  */
 export const createPayPalOrder = async (
   amountUSD: string,
   description: string,
-  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' | 'cart' = 'gmb',
+  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' | 'cart' | 'digital_service' = 'gmb',
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -102,6 +102,7 @@ export const createPayPalOrder = async (
     cart: `${frontendUrl}/cart-checkout`,
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
+    digital_service: `${frontendUrl}/services/web-development/supply-company`,
   };
   const cancelUrls: Record<string, string> = {
     domain: `${frontendUrl}/domain-checkout`,
@@ -109,6 +110,7 @@ export const createPayPalOrder = async (
     cart: `${frontendUrl}/cart-checkout`,
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
+    digital_service: `${frontendUrl}/services/web-development/supply-company`,
   };
   const returnUrl = returnUrls[serviceType] || returnUrls.gmb;
   const cancelUrl = cancelUrls[serviceType] || cancelUrls.gmb;
