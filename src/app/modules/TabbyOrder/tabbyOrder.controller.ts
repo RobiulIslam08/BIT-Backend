@@ -5,34 +5,9 @@
 import httpStatus from 'http-status';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
-import { TabbyOrderServices, TABBY_FILE_KEYS } from './tabbyOrder.service';
+import AppError from '../../errors/AppError';
+import { TabbyOrderServices } from './tabbyOrder.service';
 import { TTabbyFileKey } from './tabbyOrder.interface';
-
-type MulterFiles = { [fieldname: string]: Express.Multer.File[] };
-
-const collectUploadedFiles = (req: { files?: MulterFiles | Express.Multer.File[] }) => {
-  const grouped = (req.files || {}) as MulterFiles;
-  const out: Array<{
-    key: TTabbyFileKey;
-    originalName: string;
-    mimeType: string;
-    size: number;
-    data: string;
-  }> = [];
-
-  for (const key of TABBY_FILE_KEYS) {
-    const file = grouped[key]?.[0];
-    if (!file?.buffer) continue;
-    out.push({
-      key,
-      originalName: file.originalname || `${key}.bin`,
-      mimeType: file.mimetype,
-      size: file.size,
-      data: file.buffer.toString('base64'),
-    });
-  }
-  return out;
-};
 
 const createPayPalOrder = catchAsync(async (_req, res) => {
   const result = await TabbyOrderServices.createPayPalOrderForCheckout();
@@ -46,8 +21,7 @@ const createPayPalOrder = catchAsync(async (_req, res) => {
 
 const submitOrder = catchAsync(async (req, res) => {
   const userId = req.user?.userId as string;
-  const files = collectUploadedFiles(req);
-  const result = await TabbyOrderServices.submitPaypalOrder(req.body, userId, files);
+  const result = await TabbyOrderServices.submitPaypalOrder(req.body || {}, userId, []);
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
@@ -58,8 +32,7 @@ const submitOrder = catchAsync(async (req, res) => {
 
 const payWithWallet = catchAsync(async (req, res) => {
   const userId = req.user?.userId as string;
-  const files = collectUploadedFiles(req);
-  const result = await TabbyOrderServices.submitWalletOrder(req.body, userId, files);
+  const result = await TabbyOrderServices.submitWalletOrder(req.body || {}, userId, []);
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
@@ -138,6 +111,33 @@ const processRefund = catchAsync(async (req, res) => {
   });
 });
 
+const uploadFile = catchAsync(async (req, res) => {
+  const uploaded = req.file as Express.Multer.File | undefined;
+  if (!uploaded?.buffer) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'A file is required.');
+  }
+  const key = String(req.body?.key || '');
+  const result = await TabbyOrderServices.uploadOrderFile({
+    orderId: req.params.id as string,
+    userId: req.user.userId as string,
+    role: req.user.role as string,
+    key,
+    file: {
+      key: key as TTabbyFileKey,
+      originalName: uploaded.originalname || `${key}.bin`,
+      mimeType: uploaded.mimetype,
+      size: uploaded.size,
+      data: uploaded.buffer.toString('base64'),
+    },
+  });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Document uploaded successfully.',
+    data: result,
+  });
+});
+
 const downloadFile = catchAsync(async (req, res) => {
   const file = await TabbyOrderServices.getFileForDownload({
     orderId: req.params.id as string,
@@ -173,6 +173,7 @@ export const TabbyOrderControllers = {
   getAllOrders,
   updateOrder,
   processRefund,
+  uploadFile,
   downloadFile,
   deleteOrder,
 };

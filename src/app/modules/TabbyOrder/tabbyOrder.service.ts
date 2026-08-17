@@ -35,21 +35,6 @@ export const TABBY_FILE_KEYS: TTabbyFileKey[] = [
   'ownerIdCopy',
 ];
 
-const REQUIRED_FILE_KEYS: TTabbyFileKey[] = [
-  'crCopy',
-  'nationalAddressPdf',
-  'ibanCertificate',
-  'ownerIdCopy',
-];
-
-const FILE_LABELS: Record<TTabbyFileKey, string> = {
-  crCopy: 'Commercial Registration (CR) copy',
-  nationalAddressPdf: 'National Address (Wasel) PDF',
-  vatCertificate: 'VAT certificate',
-  ibanCertificate: 'IBAN / bank certificate',
-  ownerIdCopy: 'National ID / Iqama copy',
-};
-
 const ALLOWED_FILTER_KEYS = ['paymentStatus', 'orderStatus', 'paymentMethod', 'refundStatus'] as const;
 
 type UploadedFile = {
@@ -267,29 +252,24 @@ const parseAndValidatePayload = (raw: Record<string, unknown>, userId: string) =
   };
 };
 
-const assertRequiredFiles = (files: UploadedFile[], vatRegistered: boolean) => {
-  const present = new Set(files.map((f) => f.key));
-  for (const key of REQUIRED_FILE_KEYS) {
-    if (!present.has(key)) {
-      throw new AppError(httpStatus.BAD_REQUEST, `${FILE_LABELS[key]} is required.`);
-    }
-  }
-  if (vatRegistered && !present.has('vatCertificate')) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'VAT certificate is required when the business is VAT registered.');
-  }
-};
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 const saveFiles = async (orderMongoId: mongoose.Types.ObjectId, files: UploadedFile[], session?: mongoose.ClientSession) => {
   if (!files.length) return;
-  const docs = files.map((f) => ({
-    orderId: orderMongoId,
-    key: f.key,
-    originalName: f.originalName,
-    mimeType: f.mimeType,
-    size: f.size,
-    data: f.data,
-  }));
-  await TabbyOrderFile.insertMany(docs, session ? { session } : undefined);
+  for (const f of files) {
+    await TabbyOrderFile.findOneAndUpdate(
+      { orderId: orderMongoId, key: f.key },
+      {
+        $set: {
+          originalName: f.originalName,
+          mimeType: f.mimeType,
+          size: f.size,
+          data: f.data,
+        },
+      },
+      { upsert: true, new: true, session: session || undefined },
+    );
+  }
 };
 
 const saveMissingFiles = async (orderMongoId: mongoose.Types.ObjectId, files: UploadedFile[]) => {
@@ -369,14 +349,39 @@ const captureAndVerifyPayPal = async (
     throw new AppError(httpStatus.BAD_REQUEST, 'Payment capture details not found.');
   }
 
+  const captureStatus = String(captureDetails.status || '').toUpperCase();
+  if (captureStatus && captureStatus !== 'COMPLETED' && captureStatus !== 'PENDING') {
+    throw new AppError(
+      httpStatus.PAYMENT_REQUIRED,
+      `Payment capture was not completed. Current status: ${captureDetails.status}.`,
+    );
+  }
+
   const expectedUSD = TABBY_AMOUNT_USD;
   const paidUSD = parseFloat(captureDetails.amount.value);
   if (paidUSD < expectedUSD - 0.05) {
+    try {
+      await refundPayPalCapture(
+        captureDetails.id,
+        paidUSD.toFixed(2),
+        'USD',
+        'Tabby setup fee mismatch — automatic refund.',
+      );
+    } catch {
+      await notifyAdmin(
+        'Tabby payment amount mismatch — refund failed',
+        `PayPal ${paypalOrderId} captured $${paidUSD.toFixed(2)} (expected $${expectedUSD.toFixed(2)}). Automatic refund failed. Refund manually.`,
+      );
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Payment amount does not match the Tabby service fee. Please contact support.',
+      );
+    }
     await notifyAdmin(
-      'Tabby payment amount mismatch',
-      `PayPal ${paypalOrderId} — expected $${expectedUSD.toFixed(2)}, received $${paidUSD.toFixed(2)}.`,
+      'Tabby payment amount mismatch — refunded',
+      `PayPal ${paypalOrderId} captured $${paidUSD.toFixed(2)} (expected $${expectedUSD.toFixed(2)}). Automatic refund issued.`,
     );
-    throw new AppError(httpStatus.BAD_REQUEST, 'Payment amount does not match the Tabby service fee.');
+    throw new AppError(httpStatus.BAD_REQUEST, 'Payment amount does not match the Tabby service fee. The charge was refunded.');
   }
 
   return {
@@ -394,7 +399,6 @@ const submitPaypalOrder = async (
   files: UploadedFile[],
 ) => {
   const payload = parseAndValidatePayload(raw, userId);
-  assertRequiredFiles(files, payload.vatRegistered);
 
   const paypalOrderIdRaw = String(raw.paypalOrderId || '');
   const existingByPaypal = await TabbyOrder.findOne({
@@ -483,7 +487,6 @@ const submitWalletOrder = async (
   files: UploadedFile[],
 ) => {
   const payload = parseAndValidatePayload(raw, userId);
-  assertRequiredFiles(files, payload.vatRegistered);
 
   const recent = await TabbyOrder.findOne({
     userId: payload.userId,
@@ -824,6 +827,56 @@ const getFileForDownload = async (params: {
   return file;
 };
 
+const uploadOrderFile = async (params: {
+  orderId: string;
+  userId: string;
+  role: string;
+  key: string;
+  file: UploadedFile;
+}) => {
+  if (!TABBY_FILE_KEYS.includes(params.key as TTabbyFileKey)) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid document type.');
+  }
+  if (!params.file?.data) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'A file is required.');
+  }
+  if (params.file.size > MAX_FILE_BYTES) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'File is too large. Please upload a photo of the document instead.');
+  }
+
+  const order = await findOwnedOrAdminOrder(params.orderId, params.userId, params.role);
+  if (order.paymentStatus === 'refunded' || order.orderStatus === 'cancelled') {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Documents cannot be added to a cancelled or refunded order.');
+  }
+
+  await saveFiles(order._id as mongoose.Types.ObjectId, [
+    { ...params.file, key: params.key as TTabbyFileKey },
+  ]);
+  const fresh = await TabbyOrder.findById(order._id);
+  return attachFileMeta(fresh);
+};
+
+const findOwnedOrAdminOrder = async (id: string, userId: string, role: string) => {
+  const isAdmin = role === 'admin';
+  if (mongoose.Types.ObjectId.isValid(id) && String(id).length === 24) {
+    const order = await TabbyOrder.findById(id);
+    if (!order) throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+    if (!isAdmin && String(order.userId) !== String(userId)) {
+      throw new AppError(httpStatus.FORBIDDEN, 'You are not allowed to update this order.');
+    }
+    return order;
+  }
+  if (/^\d{6}$/.test(id)) {
+    const order = await TabbyOrder.findOne({ orderId: id });
+    if (!order) throw new AppError(httpStatus.NOT_FOUND, 'Order not found.');
+    if (!isAdmin && String(order.userId) !== String(userId)) {
+      throw new AppError(httpStatus.FORBIDDEN, 'You are not allowed to update this order.');
+    }
+    return order;
+  }
+  throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID.');
+};
+
 const deleteOrder = async (id: string) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Invalid order ID.');
@@ -847,5 +900,6 @@ export const TabbyOrderServices = {
   requestRefund,
   processRefund,
   getFileForDownload,
+  uploadOrderFile,
   deleteOrder,
 };
