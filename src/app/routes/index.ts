@@ -17,6 +17,7 @@ import { WalletRoutes } from "../modules/Wallet/wallet.routes"
 import { CartRoutes } from "../modules/Cart/cart.routes"
 import { DigitalServiceRoutes } from "../modules/DigitalService/digitalService.routes"
 import { DigitalServiceOrderRoutes } from "../modules/DigitalServiceOrder/digitalServiceOrder.routes"
+import { TabbyOrderRoutes } from "../modules/TabbyOrder/tabbyOrder.routes"
 
 const router = express.Router()
 
@@ -85,6 +86,10 @@ const moduleRoute = [
     {
     path: '/digital-service-orders',
     route: DigitalServiceOrderRoutes,
+  },
+    {
+    path: '/tabby-orders',
+    route: TabbyOrderRoutes,
   },
 ]
 moduleRoute.forEach(route => router.use(route.path, route.route))

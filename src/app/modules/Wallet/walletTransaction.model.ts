@@ -60,6 +60,7 @@ const WalletTransactionSchema = new Schema<IWalletTransaction>(
           'domain_renewal',
           'cart_checkout',
           'digital_service_order',
+          'tabby_order',
           'paypal_topup',
           'withdrawal',
           'transfer',

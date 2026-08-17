@@ -86,12 +86,12 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
  * Create a PayPal order server-side (server-to-server).
  * @param amountUSD - Amount in USD
  * @param description - Order description shown to buyer
- * @param serviceType - 'gmb' | 'domain' | 'hosting' | 'digital_service' — for correct return URLs
+ * @param serviceType - 'gmb' | 'domain' | 'hosting' | 'digital_service' | 'tabby' — for correct return URLs
  */
 export const createPayPalOrder = async (
   amountUSD: string,
   description: string,
-  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' | 'cart' | 'digital_service' = 'gmb',
+  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' | 'cart' | 'digital_service' | 'tabby' = 'gmb',
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -103,6 +103,7 @@ export const createPayPalOrder = async (
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
     digital_service: `${frontendUrl}/services/web-development/supply-company`,
+    tabby: `${frontendUrl}/services/tabby-business`,
   };
   const cancelUrls: Record<string, string> = {
     domain: `${frontendUrl}/domain-checkout`,
@@ -111,6 +112,7 @@ export const createPayPalOrder = async (
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
     digital_service: `${frontendUrl}/services/web-development/supply-company`,
+    tabby: `${frontendUrl}/services/tabby-business`,
   };
   const returnUrl = returnUrls[serviceType] || returnUrls.gmb;
   const cancelUrl = cancelUrls[serviceType] || cancelUrls.gmb;
@@ -358,6 +360,7 @@ export const refundPayPalCapture = async (
   captureId: string,
   amount: string,
   currency: string = 'USD',
+  noteToPayer?: string,
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   try {
@@ -371,7 +374,8 @@ export const refundPayPalCapture = async (
       },
       data: {
         amount: { value: amount, currency_code: currency },
-        note_to_payer: 'Domain registration failed. Full refund issued by BIT Software & IT Solution.',
+        note_to_payer:
+          noteToPayer || 'Full refund issued by BIT Software & IT Solution.',
       },
     });
     console.log(`[PayPal] Refund successful. Refund ID: ${response.data?.id}`);
