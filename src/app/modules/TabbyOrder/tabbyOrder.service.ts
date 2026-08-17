@@ -417,7 +417,7 @@ const submitPaypalOrder = async (
   }
 
   const paypal = await captureAndVerifyPayPal(paypalOrderIdRaw, userId);
-  if ('existingOrder' in paypal && paypal.existingOrder) {
+  if ('existingOrder' in paypal) {
     try {
       await saveMissingFiles(paypal.existingOrder._id as mongoose.Types.ObjectId, files);
     } catch (err) {
@@ -426,6 +426,7 @@ const submitPaypalOrder = async (
     return attachFileMeta(paypal.existingOrder);
   }
 
+  const capture = paypal;
   const orderId = await generateUniqueOrderId();
   const promisedBy = addWorkingDays(new Date(), 3);
 
@@ -433,7 +434,7 @@ const submitPaypalOrder = async (
   try {
     saved = await TabbyOrder.create({
       ...payload,
-      ...paypal,
+      ...capture,
       orderId,
       promisedBy,
       paymentMethod: 'paypal',
@@ -443,7 +444,7 @@ const submitPaypalOrder = async (
     });
   } catch (err: any) {
     if (err?.code === 11000) {
-      const dup = await TabbyOrder.findOne({ paypalOrderId: paypal.paypalOrderId });
+      const dup = await TabbyOrder.findOne({ paypalOrderId: capture.paypalOrderId });
       if (dup && String(dup.userId) === String(userId)) {
         try {
           await saveMissingFiles(dup._id as mongoose.Types.ObjectId, files);

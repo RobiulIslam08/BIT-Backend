@@ -1,5 +1,19 @@
 # Dokploy + Hostinger VPS — Large ZIP Upload / Download Fix
 
+## 0) Build type — use Dockerfile (not Nixpacks)
+
+Nixpacks injects all Environment secrets as `ARG`/`ENV` at build time (`SecretsUsedInArgOrEnv`, `$NIXPACKS_PATH` warnings) and still runs `npm run build`. Prefer the repo [`Dockerfile`](Dockerfile) instead.
+
+Dokploy → Backend Application → **Build Type / Provider** → **Dockerfile**
+
+- Dockerfile path: `Dockerfile` (repo root)
+- Keep JWT, PayPal, Namecheap, `CRON_SECRET`, etc. only under **Environment** (runtime). Do not add them as build args.
+- Save → **Redeploy**
+
+Compose deployments already use `build: .` in [`docker-compose.yml`](docker-compose.yml) and pick up the same Dockerfile.
+
+---
+
 ## A) Fix: `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
 
 Already fixed in code with `app.set('trust proxy', 1)`. Redeploy backend after pulling latest code.
@@ -115,8 +129,9 @@ Application-এর ভিতরে Advanced → Traefik **নয়** — সেখ
 
 ## Checklist
 
-1. [ ] Backend redeploy (`trust proxy` fix)
-2. [ ] Advanced → Volumes → Mount Path `/app/uploads`
-3. [ ] Env `UPLOAD_DIR=/app/uploads`
-4. [ ] Traefik `readTimeout: 0s`
-5. [ ] ZIP আবার upload (পুরোনো ফাইল volume ছাড়া হারিয়ে গেছে)
+1. [ ] Build Type = **Dockerfile** (not Nixpacks); secrets only in Environment
+2. [ ] Backend redeploy (`trust proxy` fix)
+3. [ ] Advanced → Volumes → Mount Path `/app/uploads`
+4. [ ] Env `UPLOAD_DIR=/app/uploads`
+5. [ ] Traefik `readTimeout: 0s`
+6. [ ] ZIP আবার upload (পুরোনো ফাইল volume ছাড়া হারিয়ে গেছে)
