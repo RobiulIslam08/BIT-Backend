@@ -29,6 +29,8 @@ import { sweepAbandonedCheckouts } from './app/modules/DomainOrder/domainOrder.s
 import { seedDomainPricingIfEmpty } from './app/modules/DomainPricing/domainPricing.service';
 import { seedHostingPlansIfEmpty } from './app/modules/HostingPlan/hostingPlan.service';
 import { sweepAbandonedHostingCheckouts } from './app/modules/HostingOrder/hostingOrder.service';
+import { seedEmailPlansIfEmpty } from './app/modules/EmailPlan/emailPlan.service';
+import { sweepAbandonedEmailCheckouts } from './app/modules/EmailOrder/emailOrder.service';
 import { UserService } from './app/modules/User/user.service';
 
 const ABANDONED_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // every hour
@@ -45,6 +47,12 @@ async function sweepAbandoned() {
     if (n > 0) console.log(`[Housekeeping] Cancelled ${n} abandoned hosting checkout(s).`);
   } catch (err) {
     console.error('[Housekeeping] Abandoned hosting checkout sweep failed (non-critical):', err);
+  }
+  try {
+    const n = await sweepAbandonedEmailCheckouts();
+    if (n > 0) console.log(`[Housekeeping] Cancelled ${n} abandoned email checkout(s).`);
+  } catch (err) {
+    console.error('[Housekeeping] Abandoned email checkout sweep failed (non-critical):', err);
   }
 }
 
@@ -74,6 +82,13 @@ async function main() {
       await seedHostingPlansIfEmpty();
     } catch (err) {
       console.error('[Startup] Hosting plans seed failed (non-critical):', err);
+    }
+
+    // Seed default Business Email plans if the collection is empty.
+    try {
+      await seedEmailPlansIfEmpty();
+    } catch (err) {
+      console.error('[Startup] Email plans seed failed (non-critical):', err);
     }
 
     // Assign a unique sequential 4-digit customer code (5001+) to any legacy users missing one.

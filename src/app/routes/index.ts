@@ -13,6 +13,9 @@ import { DomainPricingRoutes } from "../modules/DomainPricing/domainPricing.rout
 import { HostingPlanRoutes } from "../modules/HostingPlan/hostingPlan.routes"
 import { HostingOrderRoutes } from "../modules/HostingOrder/hostingOrder.routes"
 import { HostingRoutes } from "../modules/Hosting/hosting.routes"
+import { EmailPlanRoutes } from "../modules/EmailPlan/emailPlan.routes"
+import { EmailOrderRoutes } from "../modules/EmailOrder/emailOrder.routes"
+import { EmailRoutes } from "../modules/Email/email.routes"
 import { WalletRoutes } from "../modules/Wallet/wallet.routes"
 import { CartRoutes } from "../modules/Cart/cart.routes"
 import { DigitalServiceRoutes } from "../modules/DigitalService/digitalService.routes"
@@ -71,6 +74,18 @@ const moduleRoute = [
     {
     path: '/hostings',
     route: HostingRoutes,
+  },
+    {
+    path: '/email-plans',
+    route: EmailPlanRoutes,
+  },
+    {
+    path: '/email-orders',
+    route: EmailOrderRoutes,
+  },
+    {
+    path: '/emails',
+    route: EmailRoutes,
   },
     {
     path: '/wallet',

@@ -77,6 +77,11 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
     });
     return response.data;
   } catch (error: any) {
+    const issue = String(error.response?.data?.details?.[0]?.issue || error.response?.data?.name || '');
+    // Idempotent capture: PayPal already took the money — return the completed order.
+    if (issue === 'ORDER_ALREADY_CAPTURED' || /already.?captured/i.test(issue)) {
+      return getPayPalOrderDetails(orderId);
+    }
     console.error('Failed to capture PayPal order:', error.response?.data || error.message);
     throw new Error('PayPal order capture failed');
   }
@@ -86,12 +91,13 @@ export const capturePayPalOrder = async (orderId: string): Promise<any> => {
  * Create a PayPal order server-side (server-to-server).
  * @param amountUSD - Amount in USD
  * @param description - Order description shown to buyer
- * @param serviceType - 'gmb' | 'domain' | 'hosting' | 'digital_service' | 'tabby' — for correct return URLs
+ * @param serviceType - 'gmb' | 'domain' | 'hosting' | 'email' | 'digital_service' | 'tabby' — for correct return URLs
  */
 export const createPayPalOrder = async (
   amountUSD: string,
   description: string,
-  serviceType: 'gmb' | 'domain' | 'hosting' | 'wallet' | 'cart' | 'digital_service' | 'tabby' = 'gmb',
+  serviceType: 'gmb' | 'domain' | 'hosting' | 'email' | 'wallet' | 'cart' | 'digital_service' | 'tabby' = 'gmb',
+  requestId?: string,
 ): Promise<any> => {
   const accessToken = await getPayPalAccessToken();
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -99,6 +105,7 @@ export const createPayPalOrder = async (
   const returnUrls: Record<string, string> = {
     domain: `${frontendUrl}/domain-checkout/success`,
     hosting: `${frontendUrl}/hosting-checkout/success`,
+    email: `${frontendUrl}/email-checkout/success`,
     cart: `${frontendUrl}/cart-checkout`,
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
@@ -108,6 +115,7 @@ export const createPayPalOrder = async (
   const cancelUrls: Record<string, string> = {
     domain: `${frontendUrl}/domain-checkout`,
     hosting: `${frontendUrl}/hosting-checkout`,
+    email: `${frontendUrl}/email-checkout`,
     cart: `${frontendUrl}/cart-checkout`,
     gmb: `${frontendUrl}/services/google-my-business`,
     wallet: `${frontendUrl}/my-account?tab=wallet`,
@@ -124,7 +132,8 @@ export const createPayPalOrder = async (
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
-        'PayPal-Request-Id': `bit-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        'PayPal-Request-Id':
+          requestId || `bit-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       },
       data: {
         intent: 'CAPTURE',

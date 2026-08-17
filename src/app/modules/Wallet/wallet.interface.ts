@@ -23,6 +23,7 @@ export type TWalletTxnStatus = 'pending' | 'processing' | 'completed' | 'failed'
 export type TWalletRefKind =
   | 'domain_order'
   | 'hosting_order'
+  | 'email_order'
   | 'gmb_order'
   | 'domain_renewal'
   | 'cart_checkout'

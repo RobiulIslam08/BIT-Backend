@@ -56,6 +56,7 @@ const WalletTransactionSchema = new Schema<IWalletTransaction>(
         enum: [
           'domain_order',
           'hosting_order',
+          'email_order',
           'gmb_order',
           'domain_renewal',
           'cart_checkout',
