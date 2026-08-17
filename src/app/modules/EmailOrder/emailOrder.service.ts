@@ -622,7 +622,7 @@ export const payForEmailWithWallet = async (payload: PurchasePayload): Promise<I
     if (existingByKey.paymentStatus === 'paid' || existingByKey.orderStatus === 'active') {
       return existingByKey.toObject() as IEmailOrder;
     }
-    if (existingByKey.orderStatus === 'processing' && existingByKey.paymentStatus === 'paid') {
+    if (existingByKey.orderStatus === 'processing') {
       return waitForOrderSettle(existingByKey._id as mongoose.Types.ObjectId);
     }
     if (
